@@ -3,7 +3,9 @@ import { computeTTLFromSupplier, getSessionId, globalHeaders, logTrace, Internal
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
+// --- BEGIN GIATA (feature/giata-enrichment) ---
 import { invokeGiataEnrich } from "../lib/giataInvokeClient.js";
+// --- END GIATA import ---
 import { verifyToken } from "./authorizerLayer.js";
 import {
     DynamoDBClient,
@@ -14,6 +16,11 @@ const dynamo = new DynamoDBClient({ region: process.env.region });
 
 const BASE_URL = process.env.BASE_URL;
 const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // seconds
+
+// --- BEGIN GIATA (feature/giata-enrichment) ---
+// Option 3 orchestrator: invoke al-rais-giata-svc enrich Lambda, merge giataEnrichment sibling.
+// Env: GIATA_ENRICHMENT_ENABLED, GIATA_ENRICH_FUNCTION_ARN | dep: @aws-sdk/client-lambda
+// Fail-safe: errors return Provesio-only (no 500). FE picks GIATA vs Provesio for images/texts.
 
 function buildGiataEnrichPayload(row, culture) {
     const include = culture === "ar" ? ["images", "texts"] : ["images"];
@@ -54,6 +61,7 @@ async function enrichWithGiata(responseData, culture) {
 
     return responseData;
 }
+// --- END GIATA helpers ---
 
 export const handler = async (event) => {
     try {
@@ -132,7 +140,9 @@ export const handler = async (event) => {
 
             if (cached) {
                 console.info("Cache HIT for", cacheKey);
+                // --- BEGIN GIATA: enrich on cache hit (Redis stores Provesio-only) ---
                 const responseData = await enrichWithGiata(JSON.parse(cached), culture);
+                // --- END GIATA cache hit ---
                 return {
                     statusCode: 200,
                     ...globalHeaders(),
@@ -208,7 +218,9 @@ export const handler = async (event) => {
 
         await dynamo.send(updateCmd);
 
+        // --- BEGIN GIATA: enrich after Provesio, before response (not written to Redis cache) ---
         await enrichWithGiata(searchResp.data, culture);
+        // --- END GIATA cache miss ---
         searchResp.data.sessionId = sessionId;
         return {
             statusCode: 200,
