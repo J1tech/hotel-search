@@ -3,6 +3,7 @@ import { computeTTLFromSupplier, getSessionId, globalHeaders, logTrace, Internal
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
+import { invokeGiataEnrich } from "../lib/giataInvokeClient.js";
 import { verifyToken } from "./authorizerLayer.js";
 import {
     DynamoDBClient,
@@ -13,6 +14,46 @@ const dynamo = new DynamoDBClient({ region: process.env.region });
 
 const BASE_URL = process.env.BASE_URL;
 const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // seconds
+
+function buildGiataEnrichPayload(row, culture) {
+    const include = culture === "ar" ? ["images", "texts"] : ["images"];
+    const cspId = row?.cspId ?? row?.propertyInfo?.cspId;
+
+    if (cspId) {
+        return { cspId: String(cspId), culture, include };
+    }
+
+    const providerHotelId = row?.propertyInfo?.providerHotelId;
+    const supplier = row?.rooms?.[0]?.financialInfo?.supplier;
+    if (providerHotelId && supplier) {
+        return { providerHotelId: String(providerHotelId), supplier, culture, include };
+    }
+
+    return null;
+}
+
+async function enrichWithGiata(responseData, culture) {
+    if (process.env.GIATA_ENRICHMENT_ENABLED !== "true") {
+        return responseData;
+    }
+
+    const row = responseData?.data?.[0];
+    const payload = row ? buildGiataEnrichPayload(row, culture) : null;
+    if (!payload) {
+        return responseData;
+    }
+
+    try {
+        const result = await invokeGiataEnrich(payload);
+        if (result?.meta?.success && result?.data) {
+            responseData.giataEnrichment = result.data;
+        }
+    } catch (err) {
+        console.error("GIATA enrichment failed:", err.message);
+    }
+
+    return responseData;
+}
 
 export const handler = async (event) => {
     try {
@@ -90,12 +131,12 @@ export const handler = async (event) => {
             const cached = await redis.get(cacheKey);
 
             if (cached) {
-                // Return cache hit
                 console.info("Cache HIT for", cacheKey);
+                const responseData = await enrichWithGiata(JSON.parse(cached), culture);
                 return {
                     statusCode: 200,
                     ...globalHeaders(),
-                    body: cached, // already stringified
+                    body: JSON.stringify(responseData),
                 };
             }
             console.info("Cache MISS for", cacheKey);
@@ -166,7 +207,9 @@ export const handler = async (event) => {
         });
 
         await dynamo.send(updateCmd);
-        searchResp['data']['sessionId'] = sessionId
+
+        await enrichWithGiata(searchResp.data, culture);
+        searchResp.data.sessionId = sessionId;
         return {
             statusCode: 200,
             ...globalHeaders(),
