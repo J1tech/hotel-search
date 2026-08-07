@@ -1,13 +1,13 @@
 # hotel-search dev deploy
-# Pattern copied from alrais-hotel-beds-availability + GIATA invoke (see deploy/giata-serverless-snippet.yaml)
-#
-# Before first deploy: compare Environment variables on hotel-search-dev-hotelDetail
-# in AWS Console and adjust table/queue names below if they differ.
+# Secrets: SSM via serverless-ssm-fetch (/provesio/*). .env: authorizer/cognito overrides (bundled in zip).
+# GIATA: SSM params GIATA_ENRICHMENT_ENABLED + GIATA_ENRICH_FUNCTION_ARN (confirm paths in Parameter Store).
 
 service: hotel-search
 frameworkVersion: "3"
 
 custom:
+  dotenv:
+    path: .env
   serverlessSsmFetch:
     USERNAME: /provesio/username~true
     PASSWORD: /provesio/password~true
@@ -17,7 +17,10 @@ custom:
     COGNITO_CLIENT_ID: /provesio/cognitouserid~true
     GUEST_JWT_SECRET: /provesio/jwtguestsecret~true
     COGNITO_USERPOOL_ID: /provesio/cognitouserpoolid~true
-    INTERNAL_SUPPLIER_ROUTING_KEY: /provesio/INTERNAL/SUPPLIER/ROUTING/KEY~true
+    GIATA_ENRICHMENT_ENABLED: /provesio/GIATA_ENRICHMENT_ENABLED~true
+    GIATA_ENRICH_FUNCTION_ARN: /provesio/GIATA_ENRICH_FUNCTION_ARN~true
+    GIATA_USERNAME: /al-rais/dev/giata/username~true
+    GIATA_PASSWORD: /al-rais/dev/giata/password~true
 
 provider:
   name: aws
@@ -86,15 +89,15 @@ provider:
     COMPANY_CODE: ${self:custom.serverlessSsmFetch.COMPANY_CODE}
     X_API_KEY: ${self:custom.serverlessSsmFetch.X_API_KEY}
     BASE_URL: ${self:custom.serverlessSsmFetch.BASE_URL}
-    INTERNAL_BASE_URL: ${self:custom.serverlessSsmFetch.BASE_URL}
-    INTERNAL_SUPPLIER_ROUTING_KEY: ${self:custom.serverlessSsmFetch.INTERNAL_SUPPLIER_ROUTING_KEY}
+    INTERNAL_BASE_URL: ${env:INTERNAL_BASE_URL}
+    INTERNAL_SUPPLIER_ROUTING_KEY: ${env:INTERNAL_SUPPLIER_ROUTING_KEY}
     REDIS_HOST: redis-rg-dev2.tforef.ng.0001.euw1.cache.amazonaws.com
     REDIS_PORT: 6379
     COGNITO_CLIENT_ID: ${self:custom.serverlessSsmFetch.COGNITO_CLIENT_ID}
     GUEST_JWT_SECRET: ${self:custom.serverlessSsmFetch.GUEST_JWT_SECRET}
-    GUEST_TOKEN_TTL: "3600"
+    GUEST_TOKEN_TTL: ${env:GUEST_TOKEN_TTL, '3600'}
     COGNITO_USERPOOL_ID: ${self:custom.serverlessSsmFetch.COGNITO_USERPOOL_ID}
-    COGNITO_REGION: eu-west-1
+    COGNITO_REGION: ${env:COGNITO_REGION, 'eu-west-1'}
     LOG_TRACE_SQS: https://sqs.eu-west-1.amazonaws.com/648485682397/add-log-queue-${self:provider.stage}
     LOG_TRACE_BUCKET: log-trace-dev2
     REGION: eu-west-1
@@ -111,8 +114,10 @@ provider:
     CACHE_TTL_DEFAULT: "60"
     ASYNC_POLL_INTERVAL_MS: "3000"
     ASYNC_POLL_MAX_ATTEMPTS: "10"
-    GIATA_ENRICHMENT_ENABLED: "true"
-    GIATA_ENRICH_FUNCTION_ARN: arn:aws:lambda:eu-west-1:648485682397:function:al-rais-giata-svc-dev-enrich
+    GIATA_ENRICHMENT_ENABLED: ${self:custom.serverlessSsmFetch.GIATA_ENRICHMENT_ENABLED}
+    GIATA_ENRICH_FUNCTION_ARN: ${self:custom.serverlessSsmFetch.GIATA_ENRICH_FUNCTION_ARN}
+    GIATA_USERNAME: ${self:custom.serverlessSsmFetch.GIATA_USERNAME}
+    GIATA_PASSWORD: ${self:custom.serverlessSsmFetch.GIATA_PASSWORD}
 
 package:
   patterns:
@@ -122,6 +127,7 @@ package:
     - lib/**
     - package.json
     - package-lock.json
+    - .env
     - node_modules/**
     - "!node_modules/**/test/**"
     - "!node_modules/**/tests/**"
@@ -329,4 +335,5 @@ resources:
         SourceSecurityGroupId: !Ref LambdaSecurityGroup
 
 plugins:
+  - serverless-dotenv-plugin
   - serverless-ssm-fetch

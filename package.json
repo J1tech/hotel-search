@@ -6,6 +6,10 @@
   "private": true,
   "scripts": {
     "deploy:dev": "serverless deploy --config serverless-dev.yaml --stage dev",
+    "deploy:hotelDetail": "serverless deploy function -f hotelDetail --config serverless-dev.yaml --stage dev",
+    "push:hotelDetail": "bash scripts/push-hotelDetail-code.sh",
+    "push:imageProxy": "bash scripts/push-imageProxy-code.sh",
+    "set:imageProxy:giata-env": "bash scripts/set-imageProxy-giata-env.sh",
     "deploy:qa": "serverless deploy --config serverless-qa.yaml --stage qa"
   },
   "dependencies": {
@@ -21,6 +25,7 @@
   },
   "devDependencies": {
     "serverless": "^3.39.0",
+    "serverless-dotenv-plugin": "^6.0.0",
     "serverless-ssm-fetch": "^2.0.0"
   }
 }

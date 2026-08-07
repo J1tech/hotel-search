@@ -22,16 +22,33 @@ const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // second
 // Env: GIATA_ENRICHMENT_ENABLED, GIATA_ENRICH_FUNCTION_ARN | dep: @aws-sdk/client-lambda
 // Fail-safe: errors return Provesio-only (no 500). FE picks GIATA vs Provesio for images/texts.
 
-function buildGiataEnrichPayload(row, culture) {
+function parseSupplierFromHotelKey(hotelKey) {
+    if (!hotelKey || typeof hotelKey !== "string") return null;
+    if (hotelKey.includes("HOTELBEDS")) return "HOTELBEDS";
+    if (hotelKey.includes("DOTW")) return "DOTW";
+    return null;
+}
+
+function buildGiataEnrichPayload(row, culture, giataHints = {}) {
     const include = culture === "ar" ? ["images", "texts"] : ["images"];
-    const cspId = row?.cspId ?? row?.propertyInfo?.cspId;
+    const cspId =
+        giataHints.cspId ??
+        row?.cspId ??
+        row?.propertyInfo?.cspId;
 
     if (cspId) {
         return { cspId: String(cspId), culture, include };
     }
 
-    const providerHotelId = row?.propertyInfo?.providerHotelId;
-    const supplier = row?.rooms?.[0]?.financialInfo?.supplier;
+    const providerHotelId =
+        giataHints.providerHotelId ??
+        row?.providerHotelId ??
+        row?.propertyInfo?.providerHotelId;
+    const supplier =
+        giataHints.supplier ??
+        row?.rooms?.[0]?.financialInfo?.supplier ??
+        parseSupplierFromHotelKey(giataHints.hotelKey ?? row?.hotelKey);
+
     if (providerHotelId && supplier) {
         return { providerHotelId: String(providerHotelId), supplier, culture, include };
     }
@@ -39,24 +56,44 @@ function buildGiataEnrichPayload(row, culture) {
     return null;
 }
 
-async function enrichWithGiata(responseData, culture) {
+async function enrichWithGiata(responseData, culture, giataHints = {}) {
     if (process.env.GIATA_ENRICHMENT_ENABLED !== "true") {
+        console.info("GIATA skipped: GIATA_ENRICHMENT_ENABLED is not true");
         return responseData;
     }
 
     const row = responseData?.data?.[0];
-    const payload = row ? buildGiataEnrichPayload(row, culture) : null;
+    const payload = buildGiataEnrichPayload(row, culture, giataHints);
     if (!payload) {
+        console.warn("GIATA skipped: no hotel ID resolved", JSON.stringify({
+            hotelKey: giataHints.hotelKey ?? row?.hotelKey,
+            providerHotelId: giataHints.providerHotelId ?? row?.providerHotelId ?? row?.propertyInfo?.providerHotelId,
+            supplierHint: giataHints.supplier,
+            cspIdHint: giataHints.cspId,
+        }));
         return responseData;
     }
+
+    console.info("GIATA invoke payload:", JSON.stringify(payload));
 
     try {
         const result = await invokeGiataEnrich(payload);
         if (result?.meta?.success && result?.data) {
+            console.info("GIATA enrichment attached", JSON.stringify({
+                giataId: result.data.giataId ?? result.meta?.giataId,
+                imageCount: result.data.images?.length ?? 0,
+                hasTexts: result.data.texts != null,
+            }));
             responseData.giataEnrichment = result.data;
+        } else {
+            console.warn("GIATA returned unsuccessful response:", JSON.stringify({
+                success: result?.meta?.success,
+                error: result?.meta?.error,
+                statusCode: result?.meta?.statusCode,
+            }));
         }
     } catch (err) {
-        console.error("GIATA enrichment failed:", err.message);
+        console.error("GIATA enrichment failed:", err.message, err.stack);
     }
 
     return responseData;
@@ -84,8 +121,13 @@ export const handler = async (event) => {
         const {
             hotelKey,
             searchKey,
-            culture
+            culture,
+            cspId,
+            providerHotelId,
+            supplier,
         } = body || {};
+
+        const giataHints = { cspId, providerHotelId, supplier, hotelKey };
 
         // --- validation (your existing code) ---
         if (!hotelKey) {
@@ -141,7 +183,7 @@ export const handler = async (event) => {
             if (cached) {
                 console.info("Cache HIT for", cacheKey);
                 // --- BEGIN GIATA: enrich on cache hit (Redis stores Provesio-only) ---
-                const responseData = await enrichWithGiata(JSON.parse(cached), culture);
+                const responseData = await enrichWithGiata(JSON.parse(cached), culture, giataHints);
                 // --- END GIATA cache hit ---
                 return {
                     statusCode: 200,
@@ -219,7 +261,7 @@ export const handler = async (event) => {
         await dynamo.send(updateCmd);
 
         // --- BEGIN GIATA: enrich after Provesio, before response (not written to Redis cache) ---
-        await enrichWithGiata(searchResp.data, culture);
+        await enrichWithGiata(searchResp.data, culture, giataHints);
         // --- END GIATA cache miss ---
         searchResp.data.sessionId = sessionId;
         return {
