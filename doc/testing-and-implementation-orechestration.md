@@ -1,76 +1,77 @@
+# Testing & implementation notes
 
+Summary of architecture decisions and how to debug GIATA end-to-end.
 
-1. **Testing internal calls** — use 3 layers (Postman E2E + direct GIATA invoke + CloudWatch).
-2. **Lambda invoke vs HTTP** — what you did is the **right** approach; don’t expose GIATA HTTP to FE.
-3. **Touching detail API** — you had to touch **some** backend orchestrator; you did the **minimal, safest** version.
+See [giata-enrichment.md](./giata-enrichment.md) for full deploy/test reference and [frontend-integration.md](./frontend-integration.md) for FE tasks.
 
 ---
 
-## 1. How to test / debug when something breaks internally
+## Testing layers
 
-Postman only sees the **final** `/hotelDetail` response. Internal GIATA calls need **layered** testing:
+| Layer | Tool | Validates |
+|-------|------|-----------|
+| A | Postman `POST /hotelDetail` | `giataEnrichment` at response root |
+| B | `aws lambda invoke` on `al-rais-giata-svc-dev-enrich` | GIATA service alone |
+| C | CloudWatch `hotel-search-dev-hotelDetail` (filter `GIATA`) | Which ID path ran, errors |
+| D | `curl` / Postman `GET /imageProxy?imageUrl=...` | GIATA image auth + base64 body |
 
-| Layer | What | When to use |
-|-------|------|-------------|
-| **A. Postman** | `POST /hotelDetail` → check root `giataEnrichment` | End-to-end — “does the user get GIATA?” |
-| **B. AWS CLI** | `aws lambda invoke` on `al-rais-giata-svc-dev-enrich` | Is GIATA service itself OK? (you already did this) |
-| **C. CloudWatch** | Logs for `hotel-search-dev-hotelDetail` and `al-rais-giata-svc-dev-enrich` | When A fails but B works → orchestration/IAM/ID mapping |
-
-**If `/hotelDetail` has no `giataEnrichment`:**
+**If detail has no enrichment:**
 
 ```
-Postman fails
-  → Check hotelDetail CloudWatch: "GIATA enrichment failed" or no invoke
-  → Run aws lambda invoke with same payload (681234 + HOTELBEDS)
-  → If CLI works but API doesn't → IAM, env vars, or ID build logic
-  → If CLI fails → GIATA service / mapping issue
+Postman → CloudWatch (GIATA invoke payload / skipped / failed)
+       → aws lambda invoke with same IDs
+       → If CLI OK but API not → IAM or env on hotelDetail
 ```
 
-That’s the same idea as Postman, just **one level deeper** for internal calls. You don’t need a public HTTP URL for GIATA to debug it.
+**If enrichment OK but images broken on page:**
+
+```
+Check imageProxy env (GIATA_USERNAME/PASSWORD)
+→ curl imageProxy with a giataEnrichment.images[n].url
+→ Expect base64 starting with /9j/ (JPEG)
+```
 
 ---
 
-## 2. Should you expose GIATA as HTTP?
+## Architecture decisions
 
-**No — keep it as Lambda invoke. That’s optimal for your setup.**
+### Lambda invoke (not public HTTP) for GIATA
 
-| Approach | Verdict |
-|----------|---------|
-| **Current: hotel-search invokes GIATA Lambda** | Best — matches Option 3 design, GIATA stays internal, one FE call, credentials stay in AWS |
-| **Expose GIATA as public HTTP** | Worse — extra API Gateway, auth, CORS, more to secure and maintain |
-| **FE calls GIATA directly** | Bad — FE would need mapping logic, extra round trip, no merged response |
+- FE calls only `/hotelDetail`.
+- Credentials stay in AWS.
+- One merged response for the detail page.
 
-**FE should only call `/hotelDetail`.** GIATA is a **backend-internal** service, not a public API. Postman on `/hotelDetail` is the correct external test surface.
+### Minimal touch on hotelDetail
 
----
+- GIATA runs **after** Provesio — fail-safe (no 500).
+- Marked with `--- BEGIN/END GIATA ---` in code.
+- Booking / retrieve / search untouched.
 
-## 3. Did you have to touch someone else’s detail API?
+### ID resolution: cspId preferred
 
-**You had to touch some backend** to merge GIATA into the detail response. There’s no way for FE alone to get `giataEnrichment` inside the same `/hotelDetail` payload without backend changes.
+| Path | When |
+|------|------|
+| `cspId` from FE (listing) | **Preferred** — direct, faster |
+| `providerHotelId` + supplier from detail + hotelKey | Fallback — no FE change needed |
 
-**What you actually changed (minimal & safe):**
-
-- Added GIATA **after** existing Provesio flow — auth, validation, cache, Provesio call **unchanged**
-- GIATA is **fail-safe** — if it fails, users still get the same Provesio detail as before
-- Only **`hotelDetail`** touched — not booking, retrieve, search
-- New code is clearly marked (`--- BEGIN/END GIATA ---`) in `handlers/hotelDetail.js`
-
-**Alternatives (and why they’re worse):**
-
-| Alternative | Problem |
-|-------------|---------|
-| FE calls GIATA separately | Two API calls, mapping on FE, worse UX |
-| New `/hotelDetailWithGiata` endpoint | Duplicates detail logic |
-| Proxy/middleware only | Still backend work, more complex |
-
-**Touching `hotelDetail` as the BFF orchestrator is the standard pattern:** one API for the page, backend merges Provesio + GIATA.
+Listing has `cspId`; detail usually does not. Backend does not auto-fetch listing — FE must pass `cspId` if using the fast path.
 
 ---
 
-## Reassurance
+## Deploy without full Serverless
 
-- **Testing:** Postman (E2E) + `aws lambda invoke` (GIATA alone) + CloudWatch (glue) — that’s enough.
-- **Architecture:** Lambda invoke, not public HTTP — **correct choice**.
-- **Risk to existing API:** Low — additive merge, fail-safe, single endpoint, other APIs untouched.
+Serverless may fail with `aws login` creds. Use code-only scripts:
 
-Your doc at `doc/giata-enrichment.md` already captures deployment and troubleshooting for the team.
+```bash
+npm run push:hotelDetail      # enrichment + logs
+npm run push:imageProxy       # image proxy code
+npm run set:imageProxy:giata-env  # GIATA creds on imageProxy from SSM
+```
+
+IAM for GIATA invoke on shared role is separate (one-time manual step — see main doc).
+
+---
+
+## imageProxy response
+
+Successful curl/GET returns **base64-encoded JPEG** (often starts with `/9j/`). That is correct — not an error.
