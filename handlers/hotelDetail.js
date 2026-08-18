@@ -30,7 +30,7 @@ function parseSupplierFromHotelKey(hotelKey) {
 }
 
 function buildGiataEnrichPayload(row, culture, giataHints = {}) {
-    const include = culture === "ar" ? ["images", "texts"] : ["images"];
+    const include = ["images", "texts"];
     const cspId =
         giataHints.cspId ??
         row?.cspId ??

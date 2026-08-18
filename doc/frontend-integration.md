@@ -66,17 +66,19 @@ FE decodes base64 from imageProxy response (or use existing app pattern if alrea
 
 ---
 
-## 5. Arabic content (EN ↔ AR toggle)
+## 5. Descriptions (EN ↔ AR toggle)
 
 On culture change, **refetch** `/hotelDetail` with `culture: "ar"` or `"en"`.
 
 ```javascript
-function getDescription(response, culture) {
-  const giataTexts = response.giataEnrichment?.texts;
-  if (culture === "ar" && giataTexts?.description) {
-    return giataTexts.description;
-  }
-  return response.data?.[0]?.description ?? "";
+function getGiataDescription(response) {
+  const sections = response.giataEnrichment?.texts?.sections ?? [];
+  if (sections.length === 0) return null;
+  return sections.map((s) => s.body).filter(Boolean).join("\n\n");
+}
+
+function getDescription(response) {
+  return getGiataDescription(response) ?? response.data?.[0]?.description ?? "";
 }
 ```
 

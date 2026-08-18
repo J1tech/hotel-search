@@ -77,10 +77,10 @@ FE (gallery)
 
 | `culture` | GIATA `include` |
 |-----------|-----------------|
-| `en` | `["images"]` |
+| `en` | `["images", "texts"]` |
 | `ar` | `["images", "texts"]` |
 
-Arabic `texts` may be `null` if GIATA has no licensed content (expected).
+`texts` may be `null` for some hotels or cultures if GIATA has no licensed content (expected).
 
 ---
 
@@ -122,7 +122,7 @@ Listing `cspId: "574397"` → GIATA returns `giataId: "574397"`. Direct `cspId` 
   "providerHotelId": "681234",
   "supplier": "HOTELBEDS",
   "culture": "en",
-  "include": ["images"]
+  "include": ["images", "texts"]
 }
 ```
 
@@ -253,34 +253,33 @@ Ensure Provesio vars (`BASE_URL`, etc.) are real values in Console — not liter
 
 ## Deployment (code-only — no full Serverless)
 
+**Prefer this over `serverless deploy`** — full deploy can overwrite Lambda env vars with broken SSM paths.
+
 ### Prerequisites
 
 ```bash
 aws login
-aws sts get-caller-identity
+aws sts get-caller-identity   # dev: 648485682397 | qa: 091060535921
 npm install
 ```
 
-Copy `deploy/env.example` → `.env` for local deploy helpers.
+---
 
-### hotelDetail (enrichment + logs)
+### Dev (account `648485682397`)
 
 ```bash
+# 1. Push code
 npm run push:hotelDetail
-```
-
-### imageProxy (GIATA image auth)
-
-```bash
 npm run push:imageProxy
+
+# 2. Env (one-time or if missing)
+bash scripts/set-hotelDetail-giata-env.sh \
+  hotel-search-dev-hotelDetail \
+  arn:aws:lambda:eu-west-1:648485682397:function:al-rais-giata-svc-dev-enrich
+
 npm run set:imageProxy:giata-env
-```
 
-Press **`q`** if AWS CLI opens a pager.
-
-### IAM — GIATA invoke (one-time, if missing)
-
-```bash
+# 3. IAM (one-time)
 aws iam put-role-policy \
   --role-name hotel-search-dev-eu-west-1-lambdaRole \
   --policy-name hotel-search-dev-giata-invoke \
@@ -294,24 +293,114 @@ aws iam put-role-policy \
   }'
 ```
 
-Code-only push does **not** update IAM or shared env — use Console or scripts above.
+**Dev API base:** `https://hfus5c7uw2.execute-api.eu-west-1.amazonaws.com/dev`
+
+---
+
+### QA (account `091060535921`)
+
+```bash
+# 1. Push code
+npm run push:hotelDetail:qa
+npm run push:imageProxy:qa
+
+# 2. Env (one-time or if missing)
+bash scripts/set-hotelDetail-giata-env.sh \
+  hotel-search-qa-hotelDetail \
+  arn:aws:lambda:eu-west-1:091060535921:function:al-rais-giata-svc-qa-enrich
+
+npm run set:imageProxy:giata-env:qa
+
+# 3. IAM (one-time)
+aws iam put-role-policy \
+  --role-name hotel-search-qa-eu-west-1-lambdaRole \
+  --policy-name hotel-search-qa-giata-invoke \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Action": "lambda:InvokeFunction",
+      "Resource": "arn:aws:lambda:eu-west-1:091060535921:function:al-rais-giata-svc-qa-enrich"
+    }]
+  }'
+```
+
+**QA API base:** `https://9sk9buwtq8.execute-api.eu-west-1.amazonaws.com/qa`
+
+Press **`q`** if AWS CLI opens a pager.
 
 ### Full Serverless (optional — use with caution)
 
-Broken SSM resolution can overwrite Console env vars. Prefer code-only push + Console/script for env.
+Broken SSM resolution can overwrite Console env vars. Prefer code-only push + scripts above.
 
 ```bash
 eval "$(aws configure export-credentials --format env)"
 export INTERNAL_BASE_URL=https://yxa1w6bvvd.execute-api.eu-west-1.amazonaws.com
 export INTERNAL_SUPPLIER_ROUTING_KEY=dev-internal-supplier-routing-key
-npm run deploy:hotelDetail   # or deploy:dev for full stack
+npm run deploy:dev
 ```
 
 ---
 
 ## Testing
 
-### 1. End-to-end detail (with vs without cspId)
+### Smoke tests (after code-only deploy)
+
+Set API base for your stage:
+
+```bash
+# Dev
+export API_BASE="https://hfus5c7uw2.execute-api.eu-west-1.amazonaws.com/dev"
+
+# QA
+export API_BASE="https://9sk9buwtq8.execute-api.eu-west-1.amazonaws.com/qa"
+```
+
+**1. GIATA enrich Lambda direct**
+
+```bash
+# Dev
+aws lambda invoke --region eu-west-1 \
+  --function-name al-rais-giata-svc-dev-enrich \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"cspId":"1067598","culture":"en","include":["images","texts"]}' \
+  /tmp/giata-out.json && cat /tmp/giata-out.json
+
+# QA
+aws lambda invoke --region eu-west-1 \
+  --function-name al-rais-giata-svc-qa-enrich \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"cspId":"1067598","culture":"en","include":["images","texts"]}' \
+  /tmp/giata-qa.json && cat /tmp/giata-qa.json
+```
+
+**2. imageProxy**
+
+```bash
+curl -s -w "\nHTTP %{http_code}\n" -G "$API_BASE/imageProxy" \
+  --data-urlencode "imageUrl=http://ghgml.giatamedia.com/webservice/rest/1.0/images/1067598/12162859" \
+  | head -c 40
+```
+
+Expect `/9j/...` and HTTP `200`.
+
+**3. hotelDetail — EN texts + images**
+
+```bash
+curl -s -X POST "$API_BASE/hotelDetail" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <JWT>" \
+  -d '{"hotelKey":"<HOTEL_KEY>","searchKey":"<SEARCH_KEY>","culture":"en","cspId":"1067598"}' \
+  | python3 -c "import json,sys; g=json.load(sys.stdin).get('giataEnrichment',{}); print('giataId:', g.get('giataId')); print('images:', len(g.get('images') or [])); print('texts:', 'yes' if g.get('texts') else 'no')"
+```
+
+**4. hotelDetail — AR texts**
+
+Same as above with `"culture":"ar"`.
+
+---
+
+### End-to-end detail (with vs without cspId)
 
 **Without cspId** (fallback mapping):
 
@@ -339,20 +428,6 @@ console.log({
 
 Confirm path in CloudWatch: `GIATA invoke payload:` shows `cspId` vs `providerHotelId`.
 
-### 2. GIATA Lambda direct
-
-```bash
-aws lambda invoke --region eu-west-1 \
-  --function-name al-rais-giata-svc-dev-enrich \
-  --cli-binary-format raw-in-base64-out \
-  --payload '{"cspId":"1067598","culture":"en","include":["images"]}' \
-  /tmp/giata-out.json && cat /tmp/giata-out.json
-```
-
-### 3. imageProxy
-
-See smoke test above — expect base64 JPEG body.
-
 ---
 
 ## Frontend integration
@@ -373,7 +448,7 @@ Display GIATA URLs via `/imageProxy?imageUrl=` (not raw `ghgml.giatamedia.com`).
 
 ### 3. EN → AR switch
 
-Refetch `/hotelDetail` with `culture: "ar"`. Use `giataEnrichment.texts` when present; fallback to `data[0].description`.
+Refetch `/hotelDetail` with `culture: "ar"` or `"en"`. Use `giataEnrichment.texts.sections` when present; fallback to `data[0].description`.
 
 ### 4. Do not call GIATA directly from FE
 
@@ -416,3 +491,19 @@ Wrong ID paths on detail response → code not deployed → missing IAM on enric
 |-------|---------------------|-------------------|
 | Sofitel Dubai The Obelisk | `1067598` | `681234` |
 | (example from cspId test) | `574397` | — |
+
+
+
+# Call 1
+aws lambda invoke --region eu-west-1 \
+  --function-name al-rais-giata-svc-qa-enrich \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"cspId":"1067598","culture":"en","include":["images","texts"]}' \
+  /tmp/g1.json && cat /tmp/g1.json | python3 -c "import json,sys; m=json.load(sys.stdin); print('cacheHit:', m['meta']['cacheHit'])"
+
+# Call 2 (same payload — should be true)
+aws lambda invoke --region eu-west-1 \
+  --function-name al-rais-giata-svc-qa-enrich \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"cspId":"1067598","culture":"en","include":["images","texts"]}' \
+  /tmp/g2.json && cat /tmp/g2.json | python3 -c "import json,sys; m=json.load(sys.stdin); print('cacheHit:', m['meta']['cacheHit'])"
