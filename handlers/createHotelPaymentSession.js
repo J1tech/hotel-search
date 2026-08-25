@@ -22,16 +22,6 @@ export const handler = async (event) => {
             };
         }
 
-        if (authVerification?.context?.userType === "guest") {
-            return {
-                ...globalHeaders(),
-                statusCode: 401,
-                body: JSON.stringify({
-                    message: "Unauthorized: Guest User is not allowed for hotel booking",
-                }),
-            };
-        }
-
         const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body || {};
         const {
             bookingKey,
@@ -114,6 +104,7 @@ export const handler = async (event) => {
             paymentToken: { S: paymentToken },
             bookingKey: { S: bookingKey },
             userId: { S: authVerification.context.sub },
+            userType: { S: authVerification.context.userType || "registered" },
             status: { S: "pending" },
             expiresAt: { S: expiresAt },
             ttl: { N: String(ttlEpochSeconds(expiresAt)) },

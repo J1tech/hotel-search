@@ -106,7 +106,10 @@ export const handler = async (event) => {
             };
             authVerification = {
                 principalId: session.userId,
-                context: { sub: session.userId, userType: "registered" },
+                context: {
+                    sub: session.userId,
+                    userType: session.userType || "registered",
+                },
             };
         } else {
             authVerification = await verifyToken(event);
@@ -117,16 +120,6 @@ export const handler = async (event) => {
                     statusCode: 401,
                     body: JSON.stringify({
                         message: "Unauthorized: Invalid or expired token",
-                    }),
-                };
-            }
-
-            if (authVerification?.context?.userType === "guest") {
-                return {
-                    ...globalHeaders(),
-                    statusCode: 401,
-                    body: JSON.stringify({
-                        message: "Unauthorized: Guest User is not allowed for hotel booking",
                     }),
                 };
             }
