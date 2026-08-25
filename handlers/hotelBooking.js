@@ -6,6 +6,11 @@ import { createCacheKey } from "../lib/cacheKey.js";
 import { verifyToken } from "./authorizerLayer.js";
 import { DynamoDBClient, UpdateItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import {
+    getPaymentSession,
+    isPastExpiry,
+    markSessionPaid,
+} from "../lib/hotelPaymentSession.js";
 
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
 
@@ -65,31 +70,69 @@ export const handler = async (event) => {
     try {
         console.log("BASE_URL************", BASE_URL);
 
-        const authVerification = await verifyToken(event);
-        console.log(JSON.stringify(authVerification, null, 2));
-        if (authVerification?.principalId === "unknown") {
-            return {
-                ...globalHeaders(),
-                statusCode: 401,
-                body: JSON.stringify({
-                    message: "Unauthorized: Invalid or expired token",
-                }),
+        const rawBody = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
+        const paymentToken = rawBody?.paymentToken ?? null;
+        let authVerification;
+        let body;
+
+        if (paymentToken) {
+            const session = await getPaymentSession(paymentToken);
+            if (!session) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 404,
+                    body: JSON.stringify({ message: "Payment link not found", code: "NOT_FOUND" }),
+                };
+            }
+            if (session.status === "paid") {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 410,
+                    body: JSON.stringify({ message: "Already paid", code: "PAID" }),
+                };
+            }
+            if (session.status !== "pending" || isPastExpiry(session.expiresAt)) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 410,
+                    body: JSON.stringify({ message: "Payment link has expired", code: "EXPIRED" }),
+                };
+            }
+
+            body = {
+                ...(session.snapshot?.hotelBookingPayload || {}),
+                paymentDetails: rawBody.paymentDetails,
+                fort_id: rawBody.fort_id,
             };
-        }
-
-        if (authVerification?.context?.userType === 'guest') {
-            return {
-                ...globalHeaders(),
-                statusCode: 401,
-                body: JSON.stringify({
-                    message: "Unauthorized: Guest User is not allowed for hotel booking",
-                }),
+            authVerification = {
+                principalId: session.userId,
+                context: { sub: session.userId, userType: "registered" },
             };
+        } else {
+            authVerification = await verifyToken(event);
+            console.log(JSON.stringify(authVerification, null, 2));
+            if (authVerification?.principalId === "unknown") {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 401,
+                    body: JSON.stringify({
+                        message: "Unauthorized: Invalid or expired token",
+                    }),
+                };
+            }
+
+            if (authVerification?.context?.userType === "guest") {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 401,
+                    body: JSON.stringify({
+                        message: "Unauthorized: Guest User is not allowed for hotel booking",
+                    }),
+                };
+            }
+
+            body = rawBody;
         }
-
-
-        const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
-        // const conversationId = uuidv4();
 
         const {
             rooms,
@@ -330,10 +373,11 @@ export const handler = async (event) => {
             };
         }
 
-        // Prepare payload
+        // Prepare payload (never send paymentToken to supplier)
+        const { paymentToken: _omit, ...bookingFields } = body;
         const searchPayload = {
-            ...body,
-            clientReference: uuidv4()
+            ...bookingFields,
+            clientReference: uuidv4(),
         };
 
         console.log("searchPayload**********", searchPayload);
@@ -464,6 +508,15 @@ export const handler = async (event) => {
             }
         });
         await dynamo.send(updateCmd);
+
+        if (paymentToken) {
+            try {
+                await markSessionPaid(paymentToken);
+            } catch (err) {
+                console.warn("Failed to mark payment session paid:", paymentToken, err.message);
+            }
+        }
+
         if (Array.isArray(responseData)) {
             responseData[0].sessionId = sessionId;
             responseData[0].conversationId = conversationId;
