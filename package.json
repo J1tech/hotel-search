@@ -7,6 +7,7 @@
   "scripts": {
     "deploy:dev": "serverless deploy --config serverless-dev.yaml --stage dev",
     "deploy:hotelDetail": "serverless deploy function -f hotelDetail --config serverless-dev.yaml --stage dev",
+    "deploy:getHotelReviews": "serverless deploy function -f getHotelReviews --config serverless-dev.yaml --stage dev",
     "push:hotelDetail": "bash scripts/push-hotelDetail-code.sh hotel-search-dev-hotelDetail",
     "push:hotelDetail:qa": "bash scripts/push-hotelDetail-code.sh hotel-search-qa-hotelDetail",
     "push:imageProxy": "bash scripts/push-imageProxy-code.sh hotel-search-dev-imageProxy",
