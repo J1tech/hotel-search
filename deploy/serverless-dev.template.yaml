@@ -71,6 +71,7 @@ provider:
             - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-book-${self:provider.stage}/index/*
             - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-pre-book-${self:provider.stage}
             - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-pre-book-${self:provider.stage}/index/*
+            - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-payment-session-${self:provider.stage}
             - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-cancellation-${self:provider.stage}
             - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/user-filter-${self:provider.stage}
             - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/users-${self:provider.stage}
@@ -105,6 +106,7 @@ provider:
     LOG_TRACE_TABLE: logtrace-${self:provider.stage}
     HOTEL_BOOK_TABLE: hotel-book-${self:provider.stage}
     HOTEL_PRE_BOOK_TABLE: hotel-pre-book-${self:provider.stage}
+    HOTEL_PAYMENT_SESSION_TABLE: hotel-payment-session-${self:provider.stage}
     HOTEL_CANCELLATION_TABLE: hotel-cancellation-${self:provider.stage}
     USER_FILTER_TABLE: user-filter-${self:provider.stage}
     USERS_TABLE: users-${self:provider.stage}
@@ -205,6 +207,30 @@ functions:
       - http:
           path: /hotelBooking
           method: post
+          cors: *cors
+
+  createHotelPaymentSession:
+    handler: handlers/createHotelPaymentSession.handler
+    name: hotel-search-${self:provider.stage}-createHotelPaymentSession
+    timeout: 30
+    memorySize: 512
+    layers:
+      - arn:aws:lambda:eu-west-1:${aws:accountId}:layer:authorizerLayer:11
+    events:
+      - http:
+          path: /hotelPaymentSession
+          method: post
+          cors: *cors
+
+  getHotelPaymentSession:
+    handler: handlers/getHotelPaymentSession.handler
+    name: hotel-search-${self:provider.stage}-getHotelPaymentSession
+    timeout: 15
+    memorySize: 512
+    events:
+      - http:
+          path: /hotelPaymentSession/{token}
+          method: get
           cors: *cors
 
   hotelRetrieve:
@@ -333,6 +359,21 @@ resources:
         ToPort: 6379
         GroupId: sg-09bec78477dacc22b
         SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+    HotelPaymentSessionTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: hotel-payment-session-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: paymentToken
+            AttributeType: S
+        KeySchema:
+          - AttributeName: paymentToken
+            KeyType: HASH
+        TimeToLiveSpecification:
+          AttributeName: ttl
+          Enabled: true
 
 plugins:
   - serverless-dotenv-plugin
