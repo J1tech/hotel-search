@@ -13,11 +13,31 @@ import {
     searchGooglePlace,
 } from "../lib/googlePlaces.js";
 
+const REVIEWS_BROWSER_CACHE = "public, max-age=86400";
+
 function json(statusCode, payload) {
+    const base = globalHeaders();
     return {
-        ...globalHeaders(),
+        ...base,
         statusCode,
+        headers: {
+            ...base.headers,
+            "Cache-Control": statusCode === 200 ? REVIEWS_BROWSER_CACHE : "no-store",
+        },
         body: JSON.stringify(payload),
+    };
+}
+
+function readRequestFields(event) {
+    const query = event.queryStringParameters || {};
+    return {
+        hotelName: String(query.hotelName ?? "").trim(),
+        city: String(query.city ?? "").trim(),
+        language: String(query.language ?? "").trim().toLowerCase(),
+        latitude: Number(query.latitude),
+        longitude: Number(query.longitude),
+        supplier: String(query.supplier ?? "").trim(),
+        providerHotelId: String(query.providerHotelId ?? "").trim(),
     };
 }
 
@@ -38,14 +58,15 @@ export const handler = async (event) => {
             return json(500, { message: "GOOGLE_PLACES_API_KEY is not configured" });
         }
 
-        const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body || {};
-        const hotelName = String(body.hotelName ?? "").trim();
-        const city = String(body.city ?? "").trim();
-        const language = String(body.language ?? "").trim().toLowerCase();
-        const latitude = Number(body.latitude);
-        const longitude = Number(body.longitude);
-        const supplier = String(body.supplier ?? "").trim();
-        const providerHotelId = String(body.providerHotelId ?? "").trim();
+        const {
+            hotelName,
+            city,
+            language,
+            latitude,
+            longitude,
+            supplier,
+            providerHotelId,
+        } = readRequestFields(event);
 
         if (!hotelName) return json(400, { message: "hotelName is required" });
         if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {

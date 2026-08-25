@@ -182,7 +182,7 @@ functions:
     events:
       - http:
           path: /getHotelReviews
-          method: post
+          method: get
           cors: *cors
 
   getMoreRooms:
