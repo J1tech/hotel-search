@@ -418,28 +418,38 @@ export const handler = async (event) => {
         };
 
 
+        const dynamoString = (value) => {
+            if (value === undefined || value === null) return undefined;
+            const str = String(value);
+            if (!str) return undefined;
+            return { S: str };
+        };
+        const bookItem = Object.fromEntries(
+            Object.entries({
+                bookingReferenceId: dynamoString(hotelBookObj.bookingReferenceId),
+                hotelKey: dynamoString(hotelBookObj.hotelKey),
+                supplierReferenceId: dynamoString(hotelBookObj.supplierReferenceId),
+                clientReference: dynamoString(hotelBookObj.clientReference),
+                bookingStatus: dynamoString(hotelBookObj.bookingStatus),
+                transactionDate: dynamoString(hotelBookObj.transactionDate),
+                hotel: dynamoString(hotelBookObj.hotel),
+                passengers: dynamoString(hotelBookObj.passengers),
+                userId: dynamoString(hotelBookObj.userId),
+                userType: dynamoString(hotelBookObj.userType),
+                request: dynamoString(hotelBookObj.request),
+                sessionId: dynamoString(hotelBookObj.sessionId),
+                fort_id: dynamoString(hotelBookObj.fort_id),
+                conversationId: dynamoString(hotelBookObj.conversationId),
+                createdAt: dynamoString(hotelBookObj.createdAt),
+                updatedAt: dynamoString(hotelBookObj.updatedAt),
+                searchKey: dynamoString(searchKey),
+                bookingKey: dynamoString(bookingKey),
+            }).filter(([, attr]) => attr)
+        );
+
         const putCmd = new PutItemCommand({
             TableName: process.env.HOTEL_BOOK_TABLE,
-            Item: {
-                bookingReferenceId: { S: hotelBookObj.bookingReferenceId },
-                hotelKey: { S: hotelBookObj.hotelKey },
-                supplierReferenceId: { S: hotelBookObj.supplierReferenceId },
-                clientReference: { S: hotelBookObj.clientReference },
-                bookingStatus: { S: hotelBookObj.bookingStatus },
-                transactionDate: { S: hotelBookObj.transactionDate },
-                hotel: { S: hotelBookObj.hotel },
-                passengers: { S: hotelBookObj.passengers },
-                userId: { S: hotelBookObj.userId },
-                userType: { S: hotelBookObj.userType },
-                request: { S: hotelBookObj.request },
-                sessionId: { S: hotelBookObj.sessionId },
-                fort_id: { S: hotelBookObj.fort_id },
-                conversationId: { S: hotelBookObj.conversationId },
-                createdAt: { S: hotelBookObj.createdAt },
-                updatedAt: { S: hotelBookObj.updatedAt },
-                ...(searchKey ? { searchKey: { S: String(searchKey) } } : {}),
-                ...(bookingKey ? { bookingKey: { S: String(bookingKey) } } : {}),
-            }
+            Item: bookItem,
         });
 
         await dynamo.send(putCmd);
