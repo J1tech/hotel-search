@@ -102,7 +102,7 @@ export const handler = async (event) => {
             body = {
                 ...(session.snapshot?.hotelBookingPayload || {}),
                 paymentDetails: rawBody.paymentDetails,
-                fort_id: rawBody.fort_id,
+                fort_id: rawBody.fort_id || rawBody.paymentDetails?.cardInfo,
             };
             authVerification = {
                 principalId: session.userId,
@@ -136,8 +136,12 @@ export const handler = async (event) => {
             currency,
             culture,
             stayDateRange,
-            paymentDetails
+            paymentDetails,
+            fort_id
         } = body || {};
+
+        // FE sends N-Genius ref in paymentDetails.cardInfo; legacy field is fort_id
+        const paymentRef = fort_id || paymentDetails?.cardInfo || null;
 
         // --- validation (your existing code) ---
 
@@ -452,30 +456,35 @@ export const handler = async (event) => {
             sessionId: sessionId,
             conversationId: conversationId,
             request: JSON.stringify(body),
+            fort_id: paymentRef,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
         };
 
+        const bookItem = {
+            bookingReferenceId: { S: hotelBookObj.bookingReferenceId },
+            hotelKey: { S: hotelBookObj.hotelKey },
+            supplierReferenceId: { S: hotelBookObj.supplierReferenceId },
+            clientReference: { S: hotelBookObj.clientReference },
+            bookingStatus: { S: hotelBookObj.bookingStatus },
+            transactionDate: { S: hotelBookObj.transactionDate },
+            hotel: { S: hotelBookObj.hotel },
+            passengers: { S: hotelBookObj.passengers },
+            userId: { S: hotelBookObj.userId },
+            userType: { S: hotelBookObj.userType },
+            request: { S: hotelBookObj.request },
+            sessionId: { S: hotelBookObj.sessionId },
+            conversationId: { S: hotelBookObj.conversationId },
+            createdAt: { S: hotelBookObj.createdAt },
+            updatedAt: { S: hotelBookObj.updatedAt },
+        };
+        if (paymentRef) {
+            bookItem.fort_id = { S: String(paymentRef) };
+        }
 
         const putCmd = new PutItemCommand({
             TableName: process.env.HOTEL_BOOK_TABLE,
-            Item: {
-                bookingReferenceId: { S: hotelBookObj.bookingReferenceId },
-                hotelKey: { S: hotelBookObj.hotelKey },
-                supplierReferenceId: { S: hotelBookObj.supplierReferenceId },
-                clientReference: { S: hotelBookObj.clientReference },
-                bookingStatus: { S: hotelBookObj.bookingStatus },
-                transactionDate: { S: hotelBookObj.transactionDate },
-                hotel: { S: hotelBookObj.hotel },
-                passengers: { S: hotelBookObj.passengers },
-                userId: { S: hotelBookObj.userId },
-                userType: { S: hotelBookObj.userType },
-                request: { S: hotelBookObj.request },
-                sessionId: { S: hotelBookObj.sessionId },
-                conversationId: { S: hotelBookObj.conversationId },
-                createdAt: { S: hotelBookObj.createdAt },
-                updatedAt: { S: hotelBookObj.updatedAt }
-            }
+            Item: bookItem,
         });
 
         await dynamo.send(putCmd);
