@@ -1,19 +1,15 @@
 import axios from "axios";
-import { computeTTLFromSupplier, getSessionId, globalHeaders, InternalError, logTrace, removedConverationId } from "../helper/helper.js";
+import { computeTTLFromSupplier, enqueueHotelBookingEmail, getSessionId, globalHeaders, InternalError, isHotelSupplierConfirmed, logTrace, removedConverationId } from "../helper/helper.js";
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { verifyToken } from "./authorizerLayer.js";
 import { DynamoDBClient, UpdateItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
-import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
 
 const BASE_URL = process.env.BASE_URL;
 const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // seconds
-const sqsClient = new SQSClient({
-    region: "eu-west-1",
-});
 const ASYNC_POLL_INTERVAL_MS = Number(process.env.ASYNC_POLL_INTERVAL_MS || 3000); // 3s between retries
 const ASYNC_POLL_MAX_ATTEMPTS = Number(process.env.ASYNC_POLL_MAX_ATTEMPTS || 10); // up to 30s total
 
@@ -440,7 +436,9 @@ export const handler = async (event) => {
                 fort_id: { S: hotelBookObj.fort_id },
                 conversationId: { S: hotelBookObj.conversationId },
                 createdAt: { S: hotelBookObj.createdAt },
-                updatedAt: { S: hotelBookObj.updatedAt }
+                updatedAt: { S: hotelBookObj.updatedAt },
+                ...(searchKey ? { searchKey: { S: String(searchKey) } } : {}),
+                ...(bookingKey ? { bookingKey: { S: String(bookingKey) } } : {}),
             }
         });
 
@@ -474,17 +472,26 @@ export const handler = async (event) => {
 
         // await removedConverationId(authVerification?.context?.sub, searchKey)
 
-        // const invokeEmailObj = {
-        //     hotelBookingData: JSON.stringify(searchResp.data),
-        //     userId: authVerification?.context?.sub,
-        //     userType: authVerification?.context?.userType,
-        // }
-        // console.log("invokeEmailObj********",invokeEmailObj);
-
-        // await sqsClient.send(new SendMessageCommand({
-        //     QueueUrl: process.env.INVOKE_EMAIL_QUEUE,
-        //     MessageBody: JSON.stringify(invokeEmailObj),
-        // }));
+        if (isHotelSupplierConfirmed(bookingData.bookingStatus)) {
+            await enqueueHotelBookingEmail({
+                hotelBookingData: {
+                    data: [{
+                        ...bookingData,
+                        hotel: {
+                            ...(bookingData.hotel || {}),
+                            hotelKey: bookingData.hotel?.hotelKey || hotelKey,
+                        },
+                    }],
+                },
+                userId: authVerification?.context?.sub,
+                userType: authVerification?.context?.userType,
+            });
+        } else {
+            console.log(
+                "Skipping hotel confirmation email until supplier confirms. bookingStatus:",
+                bookingData.bookingStatus
+            );
+        }
 
         return {
             statusCode: 200,

@@ -57,6 +57,7 @@ provider:
             - arn:aws:sqs:${aws:region}:${aws:accountId}:add-to-cart-queue-${self:provider.stage}
             - arn:aws:sqs:${aws:region}:${aws:accountId}:update-expired-hotel-booking-${self:provider.stage}
             - arn:aws:sqs:${aws:region}:${aws:accountId}:invoke-hotel-booking-email-${self:provider.stage}
+            - arn:aws:sqs:${aws:region}:${aws:accountId}:send-email-notification-${self:provider.stage}
 
         - Effect: Allow
           Action:
@@ -111,6 +112,8 @@ provider:
     COUNTRIES_LISTING_TABLE: countries-listing-${self:provider.stage}
     ADD_TO_CART_QUEUE: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/add-to-cart-queue-${self:provider.stage}
     UPDATE_EXPIRED_HOTEL_BOOKING: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/update-expired-hotel-booking-${self:provider.stage}
+    INVOKE_EMAIL_QUEUE: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/invoke-hotel-booking-email-${self:provider.stage}
+    SEND_EMAIL_QUEUE: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/send-email-notification-${self:provider.stage}
     CACHE_TTL_DEFAULT: "60"
     ASYNC_POLL_INTERVAL_MS: "3000"
     ASYNC_POLL_MAX_ATTEMPTS: "10"
