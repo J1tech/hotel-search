@@ -185,6 +185,19 @@ functions:
           method: get
           cors: *cors
 
+  getReviewsOverview:
+    handler: handlers/getReviewsOverview.handler
+    name: hotel-search-${self:provider.stage}-getReviewsOverview
+    timeout: 60
+    memorySize: 512
+    layers:
+      - arn:aws:lambda:eu-west-1:${aws:accountId}:layer:authorizerLayer:11
+    events:
+      - http:
+          path: /getReviewsOverview
+          method: post
+          cors: *cors
+
   getMoreRooms:
     handler: handlers/getMoreRooms.handler
     name: hotel-search-${self:provider.stage}-getMoreRooms
