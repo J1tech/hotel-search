@@ -78,6 +78,7 @@ provider:
             - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/users-${self:provider.stage}/index/*
             - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/countries-listing-${self:provider.stage}
             - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/countries-listing-${self:provider.stage}/index/*
+            - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-google-places-${self:provider.stage}
 
         - Effect: Allow
           Action: lambda:InvokeFunction
@@ -121,6 +122,9 @@ provider:
     GIATA_ENRICH_FUNCTION_ARN: ${self:custom.serverlessSsmFetch.GIATA_ENRICH_FUNCTION_ARN}
     GIATA_USERNAME: ${self:custom.serverlessSsmFetch.GIATA_USERNAME}
     GIATA_PASSWORD: ${self:custom.serverlessSsmFetch.GIATA_PASSWORD}
+    GOOGLE_PLACES_API_KEY: ${env:GOOGLE_PLACES_API_KEY}
+    HOTEL_GOOGLE_PLACES_TABLE: hotel-google-places-${self:provider.stage}
+    GOOGLE_REVIEWS_CACHE_TTL: "21600"
 
 package:
   patterns:
@@ -168,6 +172,32 @@ functions:
     events:
       - http:
           path: /hotelDetail
+          method: post
+          cors: *cors
+
+  getHotelReviews:
+    handler: handlers/getHotelReviews.handler
+    name: hotel-search-${self:provider.stage}-getHotelReviews
+    timeout: 60
+    memorySize: 512
+    layers:
+      - arn:aws:lambda:eu-west-1:${aws:accountId}:layer:authorizerLayer:11
+    events:
+      - http:
+          path: /getHotelReviews
+          method: get
+          cors: *cors
+
+  getReviewsOverview:
+    handler: handlers/getReviewsOverview.handler
+    name: hotel-search-${self:provider.stage}-getReviewsOverview
+    timeout: 60
+    memorySize: 512
+    layers:
+      - arn:aws:lambda:eu-west-1:${aws:accountId}:layer:authorizerLayer:11
+    events:
+      - http:
+          path: /getReviewsOverview
           method: post
           cors: *cors
 
@@ -336,6 +366,20 @@ resources:
         ToPort: 6379
         GroupId: sg-09bec78477dacc22b
         SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+    HotelGooglePlacesTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: hotel-google-places-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: placeLookupHash
+            AttributeType: S
+        KeySchema:
+          - AttributeName: placeLookupHash
+            KeyType: HASH
 
 plugins:
   - serverless-dotenv-plugin
