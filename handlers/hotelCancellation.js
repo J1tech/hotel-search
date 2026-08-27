@@ -3,7 +3,6 @@ import { computeTTLFromSupplier, getSessionId, globalHeaders, logTrace, Internal
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
-import { verifyToken } from "./authorizerLayer.js";
 import { DynamoDBClient, PutItemCommand, UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
 
@@ -12,27 +11,17 @@ const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // second
 
 export const handler = async (event) => {
     try {
-        const authVerification = await verifyToken(event);
-        console.log(JSON.stringify(authVerification, null, 2));
-        if (authVerification?.principalId === "unknown") {
-            return {
-                ...globalHeaders(),
-                statusCode: 401,
-                body: JSON.stringify({
-                    message: "Unauthorized: Invalid or expired token",
-                }),
-            };
-        }
+      
 
-        if (authVerification?.context?.userType === 'guest') {
-            return {
-                ...globalHeaders(),
-                statusCode: 401,
-                body: JSON.stringify({
-                    message: "Unauthorized: Guest User is not allowed for reservation booking",
-                }),
-            };
-        }
+        // if (authVerification?.context?.userType === 'guest') {
+        //     return {
+        //         ...globalHeaders(),
+        //         statusCode: 401,
+        //         body: JSON.stringify({
+        //             message: "Unauthorized: Guest User is not allowed for reservation booking",
+        //         }),
+        //     };
+        // }
 
         const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
 
@@ -40,7 +29,8 @@ export const handler = async (event) => {
         const {
             command,
             bookingReferenceId,
-            bookingKey
+            bookingKey,
+            userId
         } = body || {};
 
         // --- validation (your existing code) ---
@@ -130,7 +120,7 @@ export const handler = async (event) => {
 
         const payload = {
             id: uuidv4(),
-            userId: authVerification?.context?.sub,
+            userId: userId,
             userType: authVerification?.context?.userType,
             request: searchPayload,
             response: searchResp?.data,
@@ -159,7 +149,11 @@ export const handler = async (event) => {
                 command: { S: hotelCancellationBookObj.command },
                 userId: { S: hotelCancellationBookObj.userId },
                 userType: { S: hotelCancellationBookObj.userType },
-                request: { S: hotelCancellationBookObj.request },
+                request: { S: hotelCancel
+                    
+                    
+                    
+                    lationBookObj.request },
                 createdAt: { S: hotelCancellationBookObj.createdAt },
                 updatedAt: { S: hotelCancellationBookObj.updatedAt }
             }
