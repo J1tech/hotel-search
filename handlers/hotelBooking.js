@@ -1,5 +1,5 @@
 import axios from "axios";
-import { computeTTLFromSupplier, getSessionId, globalHeaders, InternalError, logTrace, removedConverationId } from "../helper/helper.js";
+import { computeTTLFromSupplier, enqueueHotelBookingEmail, getSessionId, globalHeaders, InternalError, isHotelSupplierConfirmed, logTrace, removedConverationId } from "../helper/helper.js";
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
@@ -16,9 +16,6 @@ const dynamo = new DynamoDBClient({ region: process.env.REGION });
 
 const BASE_URL = process.env.BASE_URL;
 const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // seconds
-const sqsClient = new SQSClient({
-    region: "eu-west-1",
-});
 const ASYNC_POLL_INTERVAL_MS = Number(process.env.ASYNC_POLL_INTERVAL_MS || 3000); // 3s between retries
 const ASYNC_POLL_MAX_ATTEMPTS = Number(process.env.ASYNC_POLL_MAX_ATTEMPTS || 10); // up to 30s total
 
@@ -482,6 +479,35 @@ export const handler = async (event) => {
             bookItem.fort_id = { S: String(paymentRef) };
         }
 
+        const dynamoString = (value) => {
+            if (value === undefined || value === null) return undefined;
+            const str = String(value);
+            if (!str) return undefined;
+            return { S: str };
+        };
+        const bookItem = Object.fromEntries(
+            Object.entries({
+                bookingReferenceId: dynamoString(hotelBookObj.bookingReferenceId),
+                hotelKey: dynamoString(hotelBookObj.hotelKey),
+                supplierReferenceId: dynamoString(hotelBookObj.supplierReferenceId),
+                clientReference: dynamoString(hotelBookObj.clientReference),
+                bookingStatus: dynamoString(hotelBookObj.bookingStatus),
+                transactionDate: dynamoString(hotelBookObj.transactionDate),
+                hotel: dynamoString(hotelBookObj.hotel),
+                passengers: dynamoString(hotelBookObj.passengers),
+                userId: dynamoString(hotelBookObj.userId),
+                userType: dynamoString(hotelBookObj.userType),
+                request: dynamoString(hotelBookObj.request),
+                sessionId: dynamoString(hotelBookObj.sessionId),
+                fort_id: dynamoString(hotelBookObj.fort_id),
+                conversationId: dynamoString(hotelBookObj.conversationId),
+                createdAt: dynamoString(hotelBookObj.createdAt),
+                updatedAt: dynamoString(hotelBookObj.updatedAt),
+                searchKey: dynamoString(searchKey),
+                bookingKey: dynamoString(bookingKey),
+            }).filter(([, attr]) => attr)
+        );
+
         const putCmd = new PutItemCommand({
             TableName: process.env.HOTEL_BOOK_TABLE,
             Item: bookItem,
@@ -526,17 +552,26 @@ export const handler = async (event) => {
 
         // await removedConverationId(authVerification?.context?.sub, searchKey)
 
-        // const invokeEmailObj = {
-        //     hotelBookingData: JSON.stringify(searchResp.data),
-        //     userId: authVerification?.context?.sub,
-        //     userType: authVerification?.context?.userType,
-        // }
-        // console.log("invokeEmailObj********",invokeEmailObj);
-
-        // await sqsClient.send(new SendMessageCommand({
-        //     QueueUrl: process.env.INVOKE_EMAIL_QUEUE,
-        //     MessageBody: JSON.stringify(invokeEmailObj),
-        // }));
+        if (isHotelSupplierConfirmed(bookingData.bookingStatus)) {
+            await enqueueHotelBookingEmail({
+                hotelBookingData: {
+                    data: [{
+                        ...bookingData,
+                        hotel: {
+                            ...(bookingData.hotel || {}),
+                            hotelKey: bookingData.hotel?.hotelKey || hotelKey,
+                        },
+                    }],
+                },
+                userId: authVerification?.context?.sub,
+                userType: authVerification?.context?.userType,
+            });
+        } else {
+            console.log(
+                "Skipping hotel confirmation email until supplier confirms. bookingStatus:",
+                bookingData.bookingStatus
+            );
+        }
 
         return {
             statusCode: 200,
