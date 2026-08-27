@@ -326,3 +326,39 @@ export const removedConverationId = async (userId, searchKey) => {
     return InternalError(error);
   }
 };
+
+const CONFIRMED_HOTEL_STATUSES = ["CONFIRMED", "VOUCHERED"];
+
+export const isHotelSupplierConfirmed = (status) =>
+  CONFIRMED_HOTEL_STATUSES.includes(String(status || "").trim().toUpperCase());
+
+export const enqueueHotelBookingEmail = async ({ hotelBookingData, userId, userType }) => {
+  const queueUrl = process.env.INVOKE_EMAIL_QUEUE;
+  if (!queueUrl) {
+    console.log("INVOKE_EMAIL_QUEUE is not set, skipping hotel confirmation email");
+    return;
+  }
+  if (!userId) {
+    console.log("No userId, skipping hotel confirmation email");
+    return;
+  }
+
+  try {
+    await sqsClient.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: JSON.stringify({
+          hotelBookingData:
+            typeof hotelBookingData === "string"
+              ? hotelBookingData
+              : JSON.stringify(hotelBookingData),
+          userId,
+          userType,
+        }),
+      })
+    );
+    console.log("Queued hotel confirmation email for userId:", userId);
+  } catch (error) {
+    console.error("Failed to queue hotel confirmation email:", error);
+  }
+};

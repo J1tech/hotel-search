@@ -1,7 +1,8 @@
 import axios from "axios";
-import { computeTTLFromSupplier, getSessionId, globalHeaders, logTrace, InternalError } from "../helper/helper.js";
+import { enqueueHotelBookingEmail, getSessionId, globalHeaders, InternalError, isHotelSupplierConfirmed } from "../helper/helper.js";
 import { DynamoDBClient, QueryCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
+import { resolveHotelBookSearchKey, resolveHotelBookBookingKey } from "../helper/hotelEmailPayload.js";
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
 
 const BASE_URL = process.env.BASE_URL;
@@ -63,12 +64,14 @@ export const handler = async (event) => {
             const responses = await Promise.allSettled(
                 results.map(async (element) => {
 
+                    const searchKey = resolveHotelBookSearchKey(element);
+                    const bookingKey = resolveHotelBookBookingKey(element);
                     const payload = {
                         productType: "H",
                         bookingReferenceId: element.bookingReferenceId,
                         clientReferenceId: "",
-                        bookingKey: "",
-                        searchKey: element.searchKey
+                        bookingKey: bookingKey || "",
+                        searchKey: searchKey || ""
                     };
 
                     try {
@@ -114,6 +117,32 @@ export const handler = async (event) => {
                         });
 
                         await dynamo.send(updateCmd);
+
+                        if (isHotelSupplierConfirmed(data?.bookingStatus)) {
+                            let storedPassengers = element.passengers;
+                            if (typeof storedPassengers === "string") {
+                                try {
+                                    storedPassengers = JSON.parse(storedPassengers);
+                                } catch {
+                                    storedPassengers = [];
+                                }
+                            }
+
+                            await enqueueHotelBookingEmail({
+                                hotelBookingData: {
+                                    data: [{
+                                        ...data,
+                                        hotel: {
+                                            ...(data.hotel || {}),
+                                            hotelKey: data.hotel?.hotelKey || element.hotelKey,
+                                            passengers: data.hotel?.passengers || data.passengers || storedPassengers || [],
+                                        },
+                                    }],
+                                },
+                                userId: element.userId,
+                                userType: element.userType,
+                            });
+                        }
 
                         return {
                             success: true,
