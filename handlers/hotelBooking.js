@@ -59,7 +59,7 @@ const pollAsyncResult = async (fetchUrl, sessionId, conversationId) => {
 
 export const handler = async (event) => {
     try {
-        console.log("BASE_URL************", BASE_URL);
+        console.log("BASE_URL********************", BASE_URL);
 
         const authVerification = await verifyToken(event);
         console.log(JSON.stringify(authVerification, null, 2));
@@ -73,15 +73,15 @@ export const handler = async (event) => {
             };
         }
 
-        if (authVerification?.context?.userType === 'guest') {
-            return {
-                ...globalHeaders(),
-                statusCode: 401,
-                body: JSON.stringify({
-                    message: "Unauthorized: Guest User is not allowed for hotel booking",
-                }),
-            };
-        }
+        // if (authVerification?.context?.userType === 'guest') {
+        //     return {
+        //         ...globalHeaders(),
+        //         statusCode: 401,
+        //         body: JSON.stringify({
+        //             message: "Unauthorized: Guest User is not allowed for hotel booking",
+        //         }),
+        //     };
+        // }
 
 
         const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
@@ -96,8 +96,7 @@ export const handler = async (event) => {
             currency,
             culture,
             stayDateRange,
-            paymentDetails,
-            fort_id
+            paymentDetails
         } = body || {};
 
         // --- validation (your existing code) ---
@@ -412,7 +411,6 @@ export const handler = async (event) => {
             sessionId: sessionId,
             conversationId: conversationId,
             request: JSON.stringify(body),
-            fort_id: fort_id,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
         };
