@@ -5,7 +5,6 @@ import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { verifyToken } from "./authorizerLayer.js";
 import { DynamoDBClient, UpdateItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
-import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import {
     getPaymentSession,
     isPastExpiry,
@@ -457,27 +456,6 @@ export const handler = async (event) => {
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
         };
-
-        const bookItem = {
-            bookingReferenceId: { S: hotelBookObj.bookingReferenceId },
-            hotelKey: { S: hotelBookObj.hotelKey },
-            supplierReferenceId: { S: hotelBookObj.supplierReferenceId },
-            clientReference: { S: hotelBookObj.clientReference },
-            bookingStatus: { S: hotelBookObj.bookingStatus },
-            transactionDate: { S: hotelBookObj.transactionDate },
-            hotel: { S: hotelBookObj.hotel },
-            passengers: { S: hotelBookObj.passengers },
-            userId: { S: hotelBookObj.userId },
-            userType: { S: hotelBookObj.userType },
-            request: { S: hotelBookObj.request },
-            sessionId: { S: hotelBookObj.sessionId },
-            conversationId: { S: hotelBookObj.conversationId },
-            createdAt: { S: hotelBookObj.createdAt },
-            updatedAt: { S: hotelBookObj.updatedAt },
-        };
-        if (paymentRef) {
-            bookItem.fort_id = { S: String(paymentRef) };
-        }
 
         const dynamoString = (value) => {
             if (value === undefined || value === null) return undefined;
