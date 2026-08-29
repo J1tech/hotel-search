@@ -58,3 +58,5 @@ config/serviceAccountKey.json
 serverless-dev.yaml
 serverless-qa.yaml
 doc/
+deploy/
+scripts/
