@@ -3,6 +3,7 @@ import { computeTTLFromSupplier, getSessionId, globalHeaders, logTrace, Internal
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
+import { toProvesioHotelCountry } from "../helper/provesioHotelCountry.js";
 import { verifyToken } from "./authorizerLayer.js";
 import {
     DynamoDBClient,
@@ -83,7 +84,8 @@ export const handler = async (event) => {
         }
         const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
         const {
-            country,
+            country: rawCountry,
+            countryCode,
             city,
             checkIn,
             checkOut,
@@ -94,6 +96,7 @@ export const handler = async (event) => {
             filters,
             browserId
         } = body || {};
+        const country = toProvesioHotelCountry(rawCountry, countryCode);
 
 
         let previousUsedFilters = { Items: [] };
