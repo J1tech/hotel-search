@@ -25,8 +25,38 @@ const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // second
 function parseSupplierFromHotelKey(hotelKey) {
     if (!hotelKey || typeof hotelKey !== "string") return null;
     if (hotelKey.includes("HOTELBEDS")) return "HOTELBEDS";
+    if (hotelKey.includes("TBOHOLIDAYS")) return "TBOHOLIDAYS";
     if (hotelKey.includes("DOTW")) return "DOTW";
     return null;
+}
+
+function isBlank(value) {
+    return value == null || String(value).trim() === "";
+}
+
+function giataDescriptionText(texts) {
+    const sections = Array.isArray(texts?.sections) ? texts.sections : [];
+    const preferred = sections.find((s) => String(s?.type ?? "").trim() === "100") || sections[0];
+    const title = String(preferred?.title ?? "").trim();
+    const body = String(preferred?.body ?? "").trim();
+    if (title && body) return `${title}\n\n${body}`;
+    return body || title || "";
+}
+
+/** Provesio TBO details often return SUCCESS with empty statics. Fill blanks only. */
+function fillEmptyProvesioFromGiata(responseData) {
+    const row = responseData?.data?.[0];
+    const giata = responseData?.giataEnrichment;
+    if (!row || !giata) return responseData;
+
+    if (isBlank(row.name) && giata.name) row.name = giata.name;
+    if (isBlank(row.city) && giata.city) row.city = giata.city;
+    if (isBlank(row.country) && giata.country) row.country = giata.country;
+    if (isBlank(row.description)) {
+        const text = giataDescriptionText(giata.texts);
+        if (text) row.description = text;
+    }
+    return responseData;
 }
 
 function buildGiataEnrichPayload(row, culture, giataHints = {}) {
@@ -85,6 +115,7 @@ async function enrichWithGiata(responseData, culture, giataHints = {}) {
                 hasTexts: result.data.texts != null,
             }));
             responseData.giataEnrichment = result.data;
+            fillEmptyProvesioFromGiata(responseData);
         } else {
             console.warn("GIATA returned unsuccessful response:", JSON.stringify({
                 success: result?.meta?.success,
