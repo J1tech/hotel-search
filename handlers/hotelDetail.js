@@ -5,6 +5,7 @@ import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 // --- BEGIN GIATA (feature/giata-enrichment) ---
 import { invokeGiataEnrich } from "../lib/giataInvokeClient.js";
+import { resolveGiataIdentity } from "../lib/giataIdentityResolver.js";
 // --- END GIATA import ---
 import { verifyToken } from "./authorizerLayer.js";
 import {
@@ -22,78 +23,67 @@ const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // second
 // Env: GIATA_ENRICHMENT_ENABLED, GIATA_ENRICH_FUNCTION_ARN | dep: @aws-sdk/client-lambda
 // Fail-safe: errors return Provesio-only (no 500). FE picks GIATA vs Provesio for images/texts.
 
-function parseSupplierFromHotelKey(hotelKey) {
-    if (!hotelKey || typeof hotelKey !== "string") return null;
-    if (hotelKey.includes("HOTELBEDS")) return "HOTELBEDS";
-    if (hotelKey.includes("DOTW")) return "DOTW";
-    return null;
-}
-
-function buildGiataEnrichPayload(row, culture, giataHints = {}) {
+function buildGiataIncludeList() {
     const include = ["images", "texts"];
-    const cspId =
-        giataHints.cspId ??
-        row?.cspId ??
-        row?.propertyInfo?.cspId;
-
-    if (cspId) {
-        return { cspId: String(cspId), culture, include };
+    if (process.env.GIATA_FACTSHEETS_ENABLED !== "false") {
+        include.push("factsheets");
     }
-
-    const providerHotelId =
-        giataHints.providerHotelId ??
-        row?.providerHotelId ??
-        row?.propertyInfo?.providerHotelId;
-    const supplier =
-        giataHints.supplier ??
-        row?.rooms?.[0]?.financialInfo?.supplier ??
-        parseSupplierFromHotelKey(giataHints.hotelKey ?? row?.hotelKey);
-
-    if (providerHotelId && supplier) {
-        return { providerHotelId: String(providerHotelId), supplier, culture, include };
-    }
-
-    return null;
+    return include;
 }
 
 async function enrichWithGiata(responseData, culture, giataHints = {}) {
     if (process.env.GIATA_ENRICHMENT_ENABLED !== "true") {
-        console.info("GIATA skipped: GIATA_ENRICHMENT_ENABLED is not true");
+        console.info("GIATA skipped", JSON.stringify({ reason: "giata_disabled" }));
         return responseData;
     }
 
     const row = responseData?.data?.[0];
-    const payload = buildGiataEnrichPayload(row, culture, giataHints);
-    if (!payload) {
-        console.warn("GIATA skipped: no hotel ID resolved", JSON.stringify({
-            hotelKey: giataHints.hotelKey ?? row?.hotelKey,
-            providerHotelId: giataHints.providerHotelId ?? row?.providerHotelId ?? row?.propertyInfo?.providerHotelId,
-            supplierHint: giataHints.supplier,
-            cspIdHint: giataHints.cspId,
+    const resolution = resolveGiataIdentity(row, giataHints, {
+        culture,
+        include: buildGiataIncludeList(),
+    });
+
+    if (!resolution.payload) {
+        console.warn("GIATA skipped", JSON.stringify({
+            reason: resolution.reason,
+            resolved: resolution.resolved,
         }));
         return responseData;
     }
 
-    console.info("GIATA invoke payload:", JSON.stringify(payload));
+    console.info("GIATA invoke", JSON.stringify({
+        reason: resolution.reason,
+        resolved: resolution.resolved,
+        payload: resolution.payload,
+    }));
 
     try {
-        const result = await invokeGiataEnrich(payload);
+        const result = await invokeGiataEnrich(resolution.payload);
         if (result?.meta?.success && result?.data) {
             console.info("GIATA enrichment attached", JSON.stringify({
+                reason: resolution.reason,
                 giataId: result.data.giataId ?? result.meta?.giataId,
                 imageCount: result.data.images?.length ?? 0,
                 hasTexts: result.data.texts != null,
+                factCount: result.data.factsheet?.factCount ?? result.data.factsheet?.facilities?.length ?? 0,
+                hasFactsheet: result.data.factsheet != null,
             }));
             responseData.giataEnrichment = result.data;
         } else {
-            console.warn("GIATA returned unsuccessful response:", JSON.stringify({
+            console.warn("GIATA returned unsuccessful response", JSON.stringify({
+                reason: "giata_unsuccessful_response",
+                resolutionReason: resolution.reason,
                 success: result?.meta?.success,
                 error: result?.meta?.error,
                 statusCode: result?.meta?.statusCode,
             }));
         }
     } catch (err) {
-        console.error("GIATA enrichment failed:", err.message, err.stack);
+        console.error("GIATA enrichment failed", JSON.stringify({
+            reason: "giata_invoke_failed",
+            resolutionReason: resolution.reason,
+            message: err.message,
+        }), err.stack);
     }
 
     return responseData;

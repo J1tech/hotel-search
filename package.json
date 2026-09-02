@@ -14,6 +14,7 @@
     "push:getHotelReviews": "bash scripts/push-hotelDetail-code.sh hotel-search-dev-getHotelReviews",
     "push:imageProxy": "bash scripts/push-imageProxy-code.sh hotel-search-dev-imageProxy",
     "push:imageProxy:qa": "bash scripts/push-imageProxy-code.sh hotel-search-qa-imageProxy",
+    "push:imageProxy:prod": "bash scripts/push-imageProxy-code.sh hotel-search-prod-imageProxy",
     "push:hotelBooking": "bash scripts/push-hotelBooking-code.sh hotel-search-dev-hotelBooking",
     "push:hotelBooking:qa": "bash scripts/push-hotelBooking-code.sh hotel-search-qa-hotelBooking",
     "push:paymentSession": "bash scripts/push-payment-session-code.sh dev",
