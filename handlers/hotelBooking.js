@@ -4,7 +4,12 @@ import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { verifyToken } from "./authorizerLayer.js";
-import { DynamoDBClient, UpdateItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, UpdateItemCommand, PutItemCommand, GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { unmarshall } from "@aws-sdk/util-dynamodb";
+import {
+    applyHotelMarkupsOnResponse,
+    supplierNetFromHold,
+} from "../helper/applyHotelMarkups.js";
 import {
     getPaymentSession,
     isPastExpiry,
@@ -372,6 +377,31 @@ export const handler = async (event) => {
             clientReference: uuidv4(),
         };
 
+        const holdRes = await dynamo.send(
+            new GetItemCommand({
+                TableName: process.env.HOTEL_PRE_BOOK_TABLE,
+                Key: { bookingKey: { S: bookingKey } },
+            }),
+        );
+        const hold = holdRes.Item ? unmarshall(holdRes.Item) : null;
+        const supplierNet = supplierNetFromHold(hold);
+        if (supplierNet != null) {
+            searchPayload.totalNet = supplierNet;
+            if (searchPayload.paymentDetails?.transactionAmount != null) {
+                searchPayload.paymentDetails.transactionAmount = supplierNet;
+            }
+            console.info("[HOTEL MARKUP] Provesio book net", {
+                bookingKey,
+                customerTotalNet: totalNet,
+                supplierTotalNet: supplierNet,
+            });
+        } else {
+            console.warn("[HOTEL MARKUP] Missing supplierTotalNet on hold; sending body totalNet to Provesio", {
+                bookingKey,
+                totalNet,
+            });
+        }
+
         console.log("searchPayload**********", searchPayload);
 
         // ---- CALL PROVESIO ----
@@ -409,6 +439,8 @@ export const handler = async (event) => {
                 conversationId
             );
         }
+
+        await applyHotelMarkupsOnResponse(responseData);
 
         const payload = {
             id: uuidv4(),

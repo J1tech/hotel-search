@@ -4,6 +4,10 @@ import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { toProvesioHotelCountry } from "../helper/provesioHotelCountry.js";
+import {
+    applyHotelMarkupsOnResponse,
+    loadHotelModuleSources,
+} from "../helper/applyHotelMarkups.js";
 import { verifyToken } from "./authorizerLayer.js";
 import {
     DynamoDBClient,
@@ -170,13 +174,15 @@ export const handler = async (event) => {
         try {
             const cached = await redis.get(cacheKey);
             if (cached) {
-
-                cached['previousFilter'] = previousUsedFilters.Items?.map(item => unmarshall(item)) || [];
-
+                const parsedCache = JSON.parse(cached);
+                parsedCache.previousFilter =
+                    previousUsedFilters.Items?.map(item => unmarshall(item)) || [];
+                const sources = await loadHotelModuleSources();
+                await applyHotelMarkupsOnResponse(parsedCache, { sources });
                 return {
                     statusCode: 200,
                     ...globalHeaders(),
-                    body: cached,
+                    body: JSON.stringify(parsedCache),
                 };
             }
         } catch (redisErr) {
@@ -211,29 +217,16 @@ export const handler = async (event) => {
             );
         }
 
+        let hotelSources = [];
         try {
-            const supplierConfig = await axios.get(
-                `${process.env.INTERNAL_BASE_URL}/internal/module-config?module=hotels`,
-                {
-                    headers: {
-                        "X-Internal-Api-Key": process.env.INTERNAL_SUPPLIER_ROUTING_KEY,
-                    },
-                    timeout: 10000,
-                }
-            );
-
-            // Build inactive supplier list
+            hotelSources = await loadHotelModuleSources();
             const inactiveSuppliers = new Set();
-
-            const sources = supplierConfig?.data?.items?.[0]?.sources || [];
-
-            sources.forEach((source) => {
-                if (!source.active) {
-                    inactiveSuppliers.add(source.name.trim().toLowerCase());
+            for (const source of hotelSources) {
+                if (source && source.active === false && source.name) {
+                    inactiveSuppliers.add(String(source.name).trim().toLowerCase());
                 }
-            });
+            }
 
-            // Remove rooms from disabled suppliers
             if (Array.isArray(responseData?.data) && inactiveSuppliers.size > 0) {
                 responseData.data = responseData.data
                     .map((hotel) => ({
@@ -242,7 +235,6 @@ export const handler = async (event) => {
                             const supplier = (room?.financialInfo?.supplier || "")
                                 .trim()
                                 .toLowerCase();
-
                             return !inactiveSuppliers.has(supplier);
                         }),
                     }))
@@ -289,7 +281,10 @@ export const handler = async (event) => {
         }
 
 
-        responseData['previousFilter'] = previousUsedFilters.Items?.map(item => unmarshall(item)) || [];
+        responseData.previousFilter =
+            previousUsedFilters.Items?.map(item => unmarshall(item)) || [];
+
+        await applyHotelMarkupsOnResponse(responseData, { sources: hotelSources });
 
         return {
             statusCode: 200,

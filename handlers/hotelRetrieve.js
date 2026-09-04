@@ -3,6 +3,7 @@ import { computeTTLFromSupplier, getSessionId, globalHeaders, InternalError, log
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
+import { applyHotelMarkupsOnResponse } from "../helper/applyHotelMarkups.js";
 import { verifyToken } from "./authorizerLayer.js";
 import { DynamoDBClient, UpdateItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
@@ -120,6 +121,8 @@ export const handler = async (event) => {
         };
 
         await logTrace(payload);
+
+        await applyHotelMarkupsOnResponse(searchResp.data);
 
         searchResp.data['sessionId'] = sessionId
         searchResp.data['conversationId'] = conversationId
