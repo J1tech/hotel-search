@@ -4,17 +4,12 @@ import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { verifyToken } from "./authorizerLayer.js";
-import { DynamoDBClient, UpdateItemCommand, PutItemCommand, GetItemCommand } from "@aws-sdk/client-dynamodb";
-import { unmarshall } from "@aws-sdk/util-dynamodb";
+import { DynamoDBClient, UpdateItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
 import {
     applyHotelMarkupsOnResponse,
     supplierNetFromHold,
 } from "../helper/applyHotelMarkups.js";
-import {
-    getPaymentSession,
-    isPastExpiry,
-    markSessionPaid,
-} from "../lib/hotelPaymentSession.js";
+import { markUnifiedSessionPaid, getPreBookRow } from "../lib/hotelPaymentSession.js";
 
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
 
@@ -72,61 +67,22 @@ export const handler = async (event) => {
         console.log("BASE_URL********************", BASE_URL);
 
         const rawBody = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
-        const paymentToken = rawBody?.paymentToken ?? null;
-        let authVerification;
-        let body;
+        const unifiedSessionToken =
+            rawBody?.sessionToken ?? rawBody?.unifiedSessionToken ?? null;
 
-        if (paymentToken) {
-            const session = await getPaymentSession(paymentToken);
-            if (!session) {
-                return {
-                    ...globalHeaders(),
-                    statusCode: 404,
-                    body: JSON.stringify({ message: "Payment link not found", code: "NOT_FOUND" }),
-                };
-            }
-            if (session.status === "paid") {
-                return {
-                    ...globalHeaders(),
-                    statusCode: 410,
-                    body: JSON.stringify({ message: "Already paid", code: "PAID" }),
-                };
-            }
-            if (session.status !== "pending" || isPastExpiry(session.expiresAt)) {
-                return {
-                    ...globalHeaders(),
-                    statusCode: 410,
-                    body: JSON.stringify({ message: "Payment link has expired", code: "EXPIRED" }),
-                };
-            }
-
-            body = {
-                ...(session.snapshot?.hotelBookingPayload || {}),
-                paymentDetails: rawBody.paymentDetails,
-                fort_id: rawBody.fort_id || rawBody.paymentDetails?.cardInfo,
+        const authVerification = await verifyToken(event);
+        console.log(JSON.stringify(authVerification, null, 2));
+        if (authVerification?.principalId === "unknown") {
+            return {
+                ...globalHeaders(),
+                statusCode: 401,
+                body: JSON.stringify({
+                    message: "Unauthorized: Invalid or expired token",
+                }),
             };
-            authVerification = {
-                principalId: session.userId,
-                context: {
-                    sub: session.userId,
-                    userType: session.userType || "registered",
-                },
-            };
-        } else {
-            authVerification = await verifyToken(event);
-            console.log(JSON.stringify(authVerification, null, 2));
-            if (authVerification?.principalId === "unknown") {
-                return {
-                    ...globalHeaders(),
-                    statusCode: 401,
-                    body: JSON.stringify({
-                        message: "Unauthorized: Invalid or expired token",
-                    }),
-                };
-            }
-
-            body = rawBody;
         }
+
+        const body = rawBody;
 
         const {
             rooms,
@@ -167,6 +123,18 @@ export const handler = async (event) => {
                 ...globalHeaders(),
                 statusCode: 400,
                 body: JSON.stringify({ message: "bookingKey is required" }),
+            };
+        }
+
+        const preBookRow = await getPreBookRow(bookingKey);
+        if (preBookRow?.status === "confirmed") {
+            return {
+                ...globalHeaders(),
+                statusCode: 409,
+                body: JSON.stringify({
+                    message: "Booking already confirmed",
+                    code: "ALREADY_BOOKED",
+                }),
             };
         }
 
@@ -370,21 +338,14 @@ export const handler = async (event) => {
             };
         }
 
-        // Prepare payload (never send paymentToken to supplier)
-        const { paymentToken: _omit, ...bookingFields } = body;
+        // Prepare payload (never send sessionToken to supplier)
+        const { sessionToken: _omitSession, unifiedSessionToken: _omitUnified, ...bookingFields } = body;
         const searchPayload = {
             ...bookingFields,
             clientReference: uuidv4(),
         };
 
-        const holdRes = await dynamo.send(
-            new GetItemCommand({
-                TableName: process.env.HOTEL_PRE_BOOK_TABLE,
-                Key: { bookingKey: { S: bookingKey } },
-            }),
-        );
-        const hold = holdRes.Item ? unmarshall(holdRes.Item) : null;
-        const supplierNet = supplierNetFromHold(hold);
+        const supplierNet = supplierNetFromHold(preBookRow);
         if (supplierNet != null) {
             searchPayload.totalNet = supplierNet;
             if (searchPayload.paymentDetails?.transactionAmount != null) {
@@ -544,11 +505,15 @@ export const handler = async (event) => {
         });
         await dynamo.send(updateCmd);
 
-        if (paymentToken) {
+        if (unifiedSessionToken) {
             try {
-                await markSessionPaid(paymentToken);
+                await markUnifiedSessionPaid(unifiedSessionToken);
             } catch (err) {
-                console.warn("Failed to mark payment session paid:", paymentToken, err.message);
+                console.warn(
+                    "Failed to mark unified payment session paid:",
+                    unifiedSessionToken,
+                    err.message
+                );
             }
         }
 
