@@ -554,7 +554,7 @@ export const handler = async (event) => {
             body: JSON.stringify(responseData),
         };
     } catch (error) {
-        console.error("Error in hotel pre book:", error.response?.data || error.message, error.stack);
+        console.error("Error in hotel booking:", error.response?.data || error.message, error.stack);
         return await InternalError(error);
     }
 };

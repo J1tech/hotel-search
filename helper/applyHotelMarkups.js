@@ -354,20 +354,34 @@ export const applyHotelMarkupsToHotel = async (hotel, { sources, ruleMap: existi
   return hotel;
 };
 
+const collectMarkupHotelsFromPayload = (payload) => {
+  const hotels = [];
+  const rows = Array.isArray(payload?.data) ? payload.data : [];
+  for (const row of rows) {
+    if (row?.hotel && typeof row.hotel === "object") {
+      hotels.push(row.hotel);
+      continue;
+    }
+    if (row && (Array.isArray(row.rooms) || row.totalPrice != null || row.propertyInfo)) {
+      hotels.push(row);
+    }
+  }
+  return hotels;
+};
+
 export const applyHotelMarkupsToSearchPayload = async (payload, { sources } = {}) => {
-  const hotels = Array.isArray(payload?.data) ? payload.data : [];
+  const hotels = collectMarkupHotelsFromPayload(payload);
   if (!hotels.length) return payload;
   const lookup = buildSourceLookup(sources || []);
   const ruleMap = await loadRuleMap(collectIdentitiesFromHotels(hotels, lookup));
   for (const hotel of hotels) {
-    applyHotelMarkupsToRooms(hotel.rooms, { lookup, ruleMap });
-    recomputeHotelTotalPrice(hotel);
+    await applyHotelMarkupsToHotel(hotel, { sources, ruleMap });
   }
   return payload;
 };
 
 export const prefetchHotelMarkupRules = async (payload, { sources } = {}) => {
-  const hotels = Array.isArray(payload?.data) ? payload.data : [];
+  const hotels = collectMarkupHotelsFromPayload(payload);
   const lookup = buildSourceLookup(sources || []);
   return loadRuleMap(collectIdentitiesFromHotels(hotels, lookup));
 };

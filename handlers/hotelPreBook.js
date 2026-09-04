@@ -2,6 +2,7 @@ import axios from "axios";
 import { computeTTLFromSupplier, getSessionId, globalHeaders, InternalError, logTrace } from "../helper/helper.js";
 import {
     applyHotelMarkupsToHotel,
+    loadHotelModuleSources,
     snapshotSupplierHotelPricing,
 } from "../helper/applyHotelMarkups.js";
 import { deepClone } from "../helper/objectUtils.js";
@@ -158,7 +159,8 @@ export const handler = async (event) => {
 
         const supplierPricing = snapshotSupplierHotelPricing(hotel);
         const clientHotel = deepClone(hotel);
-        await applyHotelMarkupsToHotel(clientHotel);
+        const sources = await loadHotelModuleSources();
+        await applyHotelMarkupsToHotel(clientHotel, { sources });
         searchResp.data.data[0].hotel = clientHotel;
 
         const {
