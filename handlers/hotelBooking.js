@@ -5,6 +5,10 @@ import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { verifyToken } from "./authorizerLayer.js";
 import { DynamoDBClient, UpdateItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import {
+    applyHotelMarkupsOnResponse,
+    supplierNetFromHold,
+} from "../helper/applyHotelMarkups.js";
 import { markUnifiedSessionPaid, getPreBookRow } from "../lib/hotelPaymentSession.js";
 
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
@@ -341,6 +345,24 @@ export const handler = async (event) => {
             clientReference: uuidv4(),
         };
 
+        const supplierNet = supplierNetFromHold(preBookRow);
+        if (supplierNet != null) {
+            searchPayload.totalNet = supplierNet;
+            if (searchPayload.paymentDetails?.transactionAmount != null) {
+                searchPayload.paymentDetails.transactionAmount = supplierNet;
+            }
+            console.info("[HOTEL MARKUP] Provesio book net", {
+                bookingKey,
+                customerTotalNet: totalNet,
+                supplierTotalNet: supplierNet,
+            });
+        } else {
+            console.warn("[HOTEL MARKUP] Missing supplierTotalNet on hold; sending body totalNet to Provesio", {
+                bookingKey,
+                totalNet,
+            });
+        }
+
         console.log("searchPayload**********", searchPayload);
 
         // ---- CALL PROVESIO ----
@@ -378,6 +400,8 @@ export const handler = async (event) => {
                 conversationId
             );
         }
+
+        await applyHotelMarkupsOnResponse(responseData);
 
         const payload = {
             id: uuidv4(),
@@ -530,7 +554,7 @@ export const handler = async (event) => {
             body: JSON.stringify(responseData),
         };
     } catch (error) {
-        console.error("Error in hotel pre book:", error.response?.data || error.message, error.stack);
+        console.error("Error in hotel booking:", error.response?.data || error.message, error.stack);
         return await InternalError(error);
     }
 };

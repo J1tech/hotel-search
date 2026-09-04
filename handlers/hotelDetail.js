@@ -6,7 +6,7 @@ import { createCacheKey } from "../lib/cacheKey.js";
 // --- BEGIN GIATA (feature/giata-enrichment) ---
 import { invokeGiataEnrich } from "../lib/giataInvokeClient.js";
 import { resolveGiataIdentity } from "../lib/giataIdentityResolver.js";
-// --- END GIATA import ---
+import { applyHotelMarkupsOnResponse, loadHotelModuleSources } from "../helper/applyHotelMarkups.js";
 import { verifyToken } from "./authorizerLayer.js";
 import {
     DynamoDBClient,
@@ -172,9 +172,10 @@ export const handler = async (event) => {
 
             if (cached) {
                 console.info("Cache HIT for", cacheKey);
-                // --- BEGIN GIATA: enrich on cache hit (Redis stores Provesio-only) ---
-                const responseData = await enrichWithGiata(JSON.parse(cached), culture, giataHints);
-                // --- END GIATA cache hit ---
+                const parsedCache = JSON.parse(cached);
+                const responseData = await enrichWithGiata(parsedCache, culture, giataHints);
+                const sources = await loadHotelModuleSources();
+                await applyHotelMarkupsOnResponse(responseData, { sources });
                 return {
                     statusCode: 200,
                     ...globalHeaders(),
@@ -252,7 +253,8 @@ export const handler = async (event) => {
 
         // --- BEGIN GIATA: enrich after Provesio, before response (not written to Redis cache) ---
         await enrichWithGiata(searchResp.data, culture, giataHints);
-        // --- END GIATA cache miss ---
+        const sources = await loadHotelModuleSources();
+        await applyHotelMarkupsOnResponse(searchResp.data, { sources });
         searchResp.data.sessionId = sessionId;
         return {
             statusCode: 200,

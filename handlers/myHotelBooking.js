@@ -1,4 +1,5 @@
 import { globalHeaders, InternalError } from "../helper/helper.js";
+import { stripSupplierHoldFields } from "../helper/applyHotelMarkups.js";
 import { verifyToken } from "./authorizerLayer.js";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { DynamoDBClient, QueryCommand } from "@aws-sdk/client-dynamodb";
@@ -110,10 +111,10 @@ export const handler = async (event) => {
 
                 const hotelImages = parseHotelResponse?.data?.[0]?.images || [];
 
-                return parseStringifiedJSON({
+                return stripSupplierHoldFields(parseStringifiedJSON({
                     ...unmarshalled,
                     hotelImages
-                });
+                }));
             })
         );
         // console.log(parsedItems);
