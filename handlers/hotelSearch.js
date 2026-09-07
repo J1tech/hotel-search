@@ -10,6 +10,11 @@ import {
 } from "../helper/applyHotelMarkups.js";
 import { verifyToken } from "./authorizerLayer.js";
 import {
+    applyGeoSearchToResponse,
+    GeoSearchError,
+    resolveSearchAnchor,
+} from "../lib/geoSearchAnchor.js";
+import {
     DynamoDBClient,
     QueryCommand,
     GetItemCommand
@@ -98,7 +103,8 @@ export const handler = async (event) => {
             travelerNationality,
             culture,
             filters,
-            browserId
+            browserId,
+            searchAnchor,
         } = body || {};
         const country = toProvesioHotelCountry(rawCountry, countryCode);
 
@@ -142,6 +148,48 @@ export const handler = async (event) => {
             return { ...globalHeaders(), statusCode: 400, body: JSON.stringify({ message: "currency is required" }) };
         }
 
+        let resolvedSearchAnchor = null;
+        if (searchAnchor != null) {
+            if (typeof searchAnchor !== "object") {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 400,
+                    body: JSON.stringify({ message: "searchAnchor must be an object" }),
+                };
+            }
+            try {
+                resolvedSearchAnchor = await resolveSearchAnchor(searchAnchor, city);
+                if (!resolvedSearchAnchor) {
+                    return {
+                        ...globalHeaders(),
+                        statusCode: 400,
+                        body: JSON.stringify({
+                            message: "searchAnchor requires latitude/longitude or nearPlace",
+                        }),
+                    };
+                }
+            } catch (error) {
+                if (error instanceof GeoSearchError) {
+                    return {
+                        ...globalHeaders(),
+                        statusCode: error.statusCode,
+                        body: JSON.stringify({ message: error.message }),
+                    };
+                }
+                throw error;
+            }
+        }
+
+        const finalizeSearchResponse = async (responseData, sources) => {
+            responseData.previousFilter =
+                previousUsedFilters.Items?.map((item) => unmarshall(item)) || [];
+            await applyHotelMarkupsOnResponse(responseData, { sources });
+            if (resolvedSearchAnchor) {
+                applyGeoSearchToResponse(responseData, resolvedSearchAnchor, searchAnchor);
+            }
+            return responseData;
+        };
+
         // Session ID
         let { sessionId, conversationId } = await getSessionId(
             authVerification?.context?.sub,
@@ -175,10 +223,8 @@ export const handler = async (event) => {
             const cached = await redis.get(cacheKey);
             if (cached) {
                 const parsedCache = JSON.parse(cached);
-                parsedCache.previousFilter =
-                    previousUsedFilters.Items?.map(item => unmarshall(item)) || [];
                 const sources = await loadHotelModuleSources();
-                await applyHotelMarkupsOnResponse(parsedCache, { sources });
+                await finalizeSearchResponse(parsedCache, sources);
                 return {
                     statusCode: 200,
                     ...globalHeaders(),
@@ -281,10 +327,7 @@ export const handler = async (event) => {
         }
 
 
-        responseData.previousFilter =
-            previousUsedFilters.Items?.map(item => unmarshall(item)) || [];
-
-        await applyHotelMarkupsOnResponse(responseData, { sources: hotelSources });
+        await finalizeSearchResponse(responseData, hotelSources);
 
         return {
             statusCode: 200,

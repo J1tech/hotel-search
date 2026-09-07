@@ -32,7 +32,9 @@
     "setup:unifiedPaymentSession:qa": "bash scripts/setup-unified-payment-session-infra.sh qa",
     "set:imageProxy:giata-env": "bash scripts/set-imageProxy-giata-env.sh",
     "set:imageProxy:giata-env:qa": "bash scripts/set-imageProxy-giata-env-qa.sh",
-    "deploy:qa": "serverless deploy --config serverless-qa.yaml --stage qa"
+    "deploy:qa": "serverless deploy --config serverless-qa.yaml --stage qa",
+    "test": "node --test lib/*.test.js",
+    "test:geo": "node --test lib/geoSearchAnchor.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.700.0",
