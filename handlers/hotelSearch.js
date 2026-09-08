@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { toProvesioHotelCountry } from "../helper/provesioHotelCountry.js";
+import { resolveProvesioCity } from "../lib/resolveProvesioCity.js";
 import {
     applyHotelMarkupsOnResponse,
     loadHotelModuleSources,
@@ -148,6 +149,12 @@ export const handler = async (event) => {
             return { ...globalHeaders(), statusCode: 400, body: JSON.stringify({ message: "currency is required" }) };
         }
 
+        const cityResolution = resolveProvesioCity({ city, country, searchAnchor });
+        const provesioCity = cityResolution.provesioCity;
+        if (cityResolution.resolution !== "allowlist" || cityResolution.inputCity !== provesioCity) {
+            console.log("provesioCityResolution", cityResolution);
+        }
+
         let resolvedSearchAnchor = null;
         if (searchAnchor != null) {
             if (typeof searchAnchor !== "object") {
@@ -158,7 +165,7 @@ export const handler = async (event) => {
                 };
             }
             try {
-                resolvedSearchAnchor = await resolveSearchAnchor(searchAnchor, city);
+                resolvedSearchAnchor = await resolveSearchAnchor(searchAnchor, provesioCity);
                 if (!resolvedSearchAnchor) {
                     return {
                         ...globalHeaders(),
@@ -211,12 +218,12 @@ export const handler = async (event) => {
         filters['payAtHotelRates'] = false;
 
         const searchPayload = {
-            country, city, checkIn, checkOut, rooms,
+            country, city: provesioCity, checkIn, checkOut, rooms,
             travelerCountryOfResidence, travelerNationality, culture, filters
         };
 
         // --- Cache check ---
-        const cacheKey = createCacheKey({ country, city, checkIn, checkOut, rooms, filters }, "hotelSearch");
+        const cacheKey = createCacheKey({ country, city: provesioCity, checkIn, checkOut, rooms, filters }, "hotelSearch");
         console.log("cacheKey**********", cacheKey);
 
         try {
