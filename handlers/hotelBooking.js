@@ -1,5 +1,7 @@
 import axios from "axios";
 import { computeTTLFromSupplier, enqueueHotelBookingEmail, getSessionId, globalHeaders, InternalError, isHotelSupplierConfirmed, logTrace, removedConverationId } from "../helper/helper.js";
+import { enqueuePendingHotelPoll, isHotelPendingPollStatus } from "../helper/hotelPendingPoll.js";
+import { markHotelConfirmationEmailQueued } from "../helper/hotelBookingStatusSync.js";
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
@@ -541,9 +543,46 @@ export const handler = async (event) => {
                 userId: authVerification?.context?.sub,
                 userType: authVerification?.context?.userType,
             });
-        } else {
+            try {
+                await markHotelConfirmationEmailQueued(
+                    dynamo,
+                    bookingData.bookingReferenceId,
+                    hotelKey
+                );
+            } catch (stampErr) {
+                console.warn(
+                    "confirmationEmailQueuedAt stamp skipped:",
+                    bookingData.bookingReferenceId,
+                    stampErr?.message
+                );
+            }
+        } else if (isHotelPendingPollStatus(bookingData.bookingStatus)) {
             console.log(
                 "Skipping hotel confirmation email until supplier confirms. bookingStatus:",
+                bookingData.bookingStatus
+            );
+            try {
+                await enqueuePendingHotelPoll({
+                    bookingReferenceId: bookingData.bookingReferenceId,
+                    hotelKey,
+                    bookingKey,
+                    searchKey,
+                    clientReferenceId: bookingData.clientReference || "",
+                    userId: authVerification?.context?.sub,
+                    userType: authVerification?.context?.userType,
+                    lastKnownStatus: bookingData.bookingStatus,
+                    enqueuedAt: hotelBookObj.createdAt,
+                });
+            } catch (pollErr) {
+                console.error(
+                    "Failed to enqueue hotel pending poll:",
+                    bookingData.bookingReferenceId,
+                    pollErr?.message
+                );
+            }
+        } else {
+            console.log(
+                "Booking status not confirmed and not pollable:",
                 bookingData.bookingStatus
             );
         }
