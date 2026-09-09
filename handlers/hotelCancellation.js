@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { DynamoDBClient, PutItemCommand, UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
+import { removePendingHotelPoll } from "../helper/hotelPendingPoll.js";
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
 
 const BASE_URL = process.env.BASE_URL;
@@ -118,10 +119,12 @@ export const handler = async (event) => {
             }
         );
 
+        const storedHotelKey = result.Items[0]?.hotelKey?.S;
+
         const payload = {
             id: uuidv4(),
             userId: userId,
-            userType: authVerification?.context?.userType,
+            userType: body?.userType || "cognito",
             request: searchPayload,
             response: searchResp?.data,
             stepCode: 180,
@@ -134,8 +137,8 @@ export const handler = async (event) => {
             bookingStatus: searchResp.data?.data[0].bookingStatus,
             bookingReferenceId: searchResp.data?.data[0].bookingReferenceId,
             command: searchResp.data?.data[0].command,
-            userId: authVerification?.context?.sub,
-            userType: authVerification?.context?.userType,
+            userId: userId,
+            userType: body?.userType || "cognito",
             request: JSON.stringify(body),
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
@@ -149,11 +152,7 @@ export const handler = async (event) => {
                 command: { S: hotelCancellationBookObj.command },
                 userId: { S: hotelCancellationBookObj.userId },
                 userType: { S: hotelCancellationBookObj.userType },
-                request: { S: hotelCancel
-                    
-                    
-                    
-                    lationBookObj.request },
+                request: { S: hotelCancellationBookObj.request },
                 createdAt: { S: hotelCancellationBookObj.createdAt },
                 updatedAt: { S: hotelCancellationBookObj.updatedAt }
             }
@@ -176,6 +175,10 @@ export const handler = async (event) => {
         });
 
         await dynamo.send(updateCmd);
+
+        if (storedHotelKey) {
+            await removePendingHotelPoll(bookingReferenceId, storedHotelKey);
+        }
 
         return {
             statusCode: 200,
