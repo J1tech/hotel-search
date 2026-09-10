@@ -4,7 +4,10 @@ import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { DynamoDBClient, PutItemCommand, UpdateItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
+import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { removePendingHotelPoll } from "../helper/hotelPendingPoll.js";
+import { parseStoredPromo } from "../helper/hotelPromoBind.js";
+import { releaseMarkupsPromo } from "../helper/markupsPromoClient.js";
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
 
 const BASE_URL = process.env.BASE_URL;
@@ -178,6 +181,29 @@ export const handler = async (event) => {
 
         if (storedHotelKey) {
             await removePendingHotelPoll(bookingReferenceId, storedHotelKey);
+        }
+
+        const isActualCancel =
+            String(command || "").toLowerCase() === "cancel" ||
+            String(hotelCancellationBookObj.command || "").toLowerCase() === "cancel";
+        if (isActualCancel) {
+            try {
+                const bookRow = unmarshall(result.Items[0]);
+                const promo = parseStoredPromo(bookRow.promo);
+                const ownerId = bookRow.userId || userId;
+                if (promo?.code && ownerId && bookingReferenceId) {
+                    const released = await releaseMarkupsPromo({
+                        code: promo.code,
+                        userId: ownerId,
+                        bookingId: bookingReferenceId,
+                    });
+                    if (!released.ok) {
+                        console.warn("[HOTEL PROMO] release failed", released.message);
+                    }
+                }
+            } catch (releaseErr) {
+                console.warn("[HOTEL PROMO] release error", releaseErr?.message);
+            }
         }
 
         return {

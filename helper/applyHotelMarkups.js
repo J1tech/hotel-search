@@ -290,7 +290,7 @@ export const identityFromRoom = (room, lookup) => ({
   supplierId: resolveSupplierId(room?.financialInfo?.supplier, lookup),
 });
 
-const collectIdentitiesFromHotels = (hotels, lookup) => {
+export const collectIdentitiesFromHotels = (hotels, lookup) => {
   const identities = [];
   const seen = new Set();
   for (const hotel of hotels || []) {

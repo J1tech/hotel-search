@@ -1,3 +1,5 @@
+import { snapshotPromoForBooking } from "./hotelPromoBind.js";
+
 const parseMaybeJson = (value) => {
   if (value == null || value === "") return value;
   if (typeof value !== "string") return value;
@@ -237,8 +239,24 @@ export const buildHotelEmailPayload = ({
     .filter((tax) => /vat/i.test(String(tax?.name || tax?.taxCode || "")))
     .reduce((sum, tax) => sum + (Number(tax?.amount) || 0), 0);
   const currency = firstNonEmpty(hotel.currency, request.currency, storedBook.currency, "AED");
-  const totalFare = Number(hotel.totalNet ?? request.totalNet);
-  const propertyCharges = Number.isFinite(totalFare) && taxTotal > 0 ? totalFare - taxTotal : undefined;
+  const promo = snapshotPromoForBooking(
+    storedBook.promo || booking.promo || hotel.promo
+  );
+  const listedRaw = Number(
+    promo?.listedPrice ?? promo?.originalTotal ?? hotel.totalNet ?? request.totalNet
+  );
+  const payableRaw = Number(promo?.payable ?? promo?.chargedAmount);
+  const listedFare = Number.isFinite(listedRaw) ? listedRaw : Number.NaN;
+  const totalFare =
+    promo && Number.isFinite(payableRaw) ? payableRaw : listedFare;
+  const propertyCharges =
+    Number.isFinite(listedFare) && taxTotal > 0 ? listedFare - taxTotal : listedFare;
+  const promoCode = firstNonEmpty(promo?.code, promo?.promoCode);
+  const promoDiscountRaw = Number(promo?.discount ?? promo?.promoAmount);
+  const promoDiscount =
+    promoCode && Number.isFinite(promoDiscountRaw) && promoDiscountRaw > 0
+      ? promoDiscountRaw
+      : undefined;
 
   const cancelIndicators = mergedRooms
     .map((room) => firstNonEmpty(room?.ratePlan?.cancelPolicyIndicator, room?.ratePlan?.cancellationPolicy))
@@ -311,6 +329,9 @@ export const buildHotelEmailPayload = ({
       taxes: taxTotal > 0 ? taxTotal : "",
       vat: vatTotal > 0 ? vatTotal : "",
       serviceFee: "",
+      promoCode: promoCode || "",
+      promoDiscount: promoDiscount != null ? promoDiscount : "",
+      listedTotal: Number.isFinite(listedFare) ? listedFare : "",
       totalFare: Number.isFinite(totalFare) ? totalFare : "",
     },
     cancellation: {

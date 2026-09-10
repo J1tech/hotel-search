@@ -12,8 +12,85 @@ import {
     supplierNetFromHold,
 } from "../helper/applyHotelMarkups.js";
 import { markUnifiedSessionPaid, getPreBookRow } from "../lib/hotelPaymentSession.js";
+import { redeemMarkupsPromo } from "../helper/markupsPromoClient.js";
+import {
+    attachBoundPromoToHotelHold,
+} from "../helper/applyHotelPromo.js";
+import {
+    foldPromoOntoHotelTotal,
+    stringifyPromo,
+} from "../helper/hotelPromoBind.js";
 
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
+
+/** Internal FE/BFF fields — never forward to Provesio hotel-book. */
+const PROVESIO_BOOK_OMIT = new Set([
+    "sessionToken",
+    "unifiedSessionToken",
+    "paymentReference",
+    "customerInfo",
+]);
+
+const isBlank = (value) =>
+    value == null || (typeof value === "string" && value.trim() === "");
+
+const sanitizeIdentityDocuments = (docs) => {
+    if (!Array.isArray(docs)) return undefined;
+    const cleaned = docs
+        .map((doc) => {
+            if (!doc || typeof doc !== "object") return null;
+            const next = {};
+            for (const [key, value] of Object.entries(doc)) {
+                if (isBlank(value)) continue;
+                next[key] = value;
+            }
+            return Object.keys(next).length ? next : null;
+        })
+        .filter(Boolean);
+    return cleaned.length ? cleaned : undefined;
+};
+
+const sanitizeHotelBookPassenger = (passenger) => {
+    if (!passenger || typeof passenger !== "object") return passenger;
+    const next = { ...passenger };
+    const docs = sanitizeIdentityDocuments(passenger.identityDocuments);
+    if (docs) next.identityDocuments = docs;
+    else delete next.identityDocuments;
+    return next;
+};
+
+/** Shape the Provesio hotel-book body without mutating the FE request we persist. */
+const buildProvesioHotelBookPayload = (body, { supplierNet, clientReference }) => {
+    const payload = {};
+    for (const [key, value] of Object.entries(body || {})) {
+        if (PROVESIO_BOOK_OMIT.has(key)) continue;
+        payload[key] = value;
+    }
+    if (isBlank(payload.userSelectedArrivalTime)) {
+        delete payload.userSelectedArrivalTime;
+    }
+    if (Array.isArray(payload.rooms)) {
+        payload.rooms = payload.rooms.map((room) => {
+            if (!room || typeof room !== "object") return room;
+            const next = { ...room };
+            if (Array.isArray(room.passengers)) {
+                next.passengers = room.passengers.map(sanitizeHotelBookPassenger);
+            }
+            return next;
+        });
+    }
+    if (payload.paymentDetails && typeof payload.paymentDetails === "object") {
+        payload.paymentDetails = { ...payload.paymentDetails };
+    }
+    payload.clientReference = clientReference;
+    if (supplierNet != null) {
+        payload.totalNet = supplierNet;
+        if (payload.paymentDetails?.transactionAmount != null) {
+            payload.paymentDetails.transactionAmount = supplierNet;
+        }
+    }
+    return payload;
+};
 
 const BASE_URL = process.env.BASE_URL;
 const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // seconds
@@ -340,19 +417,12 @@ export const handler = async (event) => {
             };
         }
 
-        // Prepare payload (never send sessionToken to supplier)
-        const { sessionToken: _omitSession, unifiedSessionToken: _omitUnified, ...bookingFields } = body;
-        const searchPayload = {
-            ...bookingFields,
-            clientReference: uuidv4(),
-        };
-
         const supplierNet = supplierNetFromHold(preBookRow);
+        const searchPayload = buildProvesioHotelBookPayload(body, {
+            supplierNet,
+            clientReference: uuidv4(),
+        });
         if (supplierNet != null) {
-            searchPayload.totalNet = supplierNet;
-            if (searchPayload.paymentDetails?.transactionAmount != null) {
-                searchPayload.paymentDetails.transactionAmount = supplierNet;
-            }
             console.info("[HOTEL MARKUP] Provesio book net", {
                 bookingKey,
                 customerTotalNet: totalNet,
@@ -405,6 +475,17 @@ export const handler = async (event) => {
 
         await applyHotelMarkupsOnResponse(responseData);
 
+        const userId = authVerification?.context?.sub;
+        const attach = await attachBoundPromoToHotelHold({
+            preBook: preBookRow,
+            userId,
+            bookingKey,
+        });
+        const promo = attach.promo;
+        if (attach.promoDropped) {
+            console.warn("[HOTEL PROMO] dropped at book", attach.promoDropped);
+        }
+
         const payload = {
             id: uuidv4(),
             userId: authVerification?.context?.sub,
@@ -430,6 +511,10 @@ export const handler = async (event) => {
 
         if (!bookingData) {
             throw new Error(`Invalid booking response: ${JSON.stringify(responseData)}`);
+        }
+
+        if (promo && bookingData.hotel) {
+            foldPromoOntoHotelTotal(bookingData.hotel, promo);
         }
 
         const hotelBookObj = {
@@ -478,6 +563,7 @@ export const handler = async (event) => {
                 updatedAt: dynamoString(hotelBookObj.updatedAt),
                 searchKey: dynamoString(searchKey),
                 bookingKey: dynamoString(bookingKey),
+                promo: dynamoString(stringifyPromo(promo)),
             }).filter(([, attr]) => attr)
         );
 
@@ -488,22 +574,39 @@ export const handler = async (event) => {
 
         await dynamo.send(putCmd);
 
+        const promoAttr = stringifyPromo(promo);
         const updateCmd = new UpdateItemCommand({
             TableName: process.env.HOTEL_PRE_BOOK_TABLE,
             Key: {
                 bookingKey: { S: bookingKey }
             },
-            UpdateExpression: "SET #bfi = :bookingReferenceId, #pas = :passengers, #st = :status",
-            ExpressionAttributeNames: {
-                "#bfi": "bookingReferenceId",
-                "#pas": "passengers",
-                "#st": "status"
-            },
-            ExpressionAttributeValues: {
-                ":bookingReferenceId": { S: bookingData.bookingReferenceId },
-                ":passengers": { S: JSON.stringify(bookingData.passengers) },
-                ":status": { S: "confirmed" }
-            }
+            UpdateExpression: promoAttr
+                ? "SET #bfi = :bookingReferenceId, #pas = :passengers, #st = :status, #prm = :promo"
+                : "SET #bfi = :bookingReferenceId, #pas = :passengers, #st = :status",
+            ExpressionAttributeNames: promoAttr
+                ? {
+                    "#bfi": "bookingReferenceId",
+                    "#pas": "passengers",
+                    "#st": "status",
+                    "#prm": "promo"
+                }
+                : {
+                    "#bfi": "bookingReferenceId",
+                    "#pas": "passengers",
+                    "#st": "status"
+                },
+            ExpressionAttributeValues: promoAttr
+                ? {
+                    ":bookingReferenceId": { S: bookingData.bookingReferenceId },
+                    ":passengers": { S: JSON.stringify(bookingData.passengers) },
+                    ":status": { S: "confirmed" },
+                    ":promo": { S: promoAttr }
+                }
+                : {
+                    ":bookingReferenceId": { S: bookingData.bookingReferenceId },
+                    ":passengers": { S: JSON.stringify(bookingData.passengers) },
+                    ":status": { S: "confirmed" }
+                }
         });
         await dynamo.send(updateCmd);
 
@@ -519,6 +622,13 @@ export const handler = async (event) => {
             }
         }
 
+        if (promo) {
+            bookingData.promo = promo;
+        }
+        if (attach.promoDropped) {
+            bookingData.promoDropped = attach.promoDropped;
+        }
+
         if (Array.isArray(responseData)) {
             responseData[0].sessionId = sessionId;
             responseData[0].conversationId = conversationId;
@@ -530,6 +640,23 @@ export const handler = async (event) => {
         // await removedConverationId(authVerification?.context?.sub, searchKey)
 
         if (isHotelSupplierConfirmed(bookingData.bookingStatus)) {
+            if (promo?.code) {
+                try {
+                    const redeemed = await redeemMarkupsPromo({
+                        code: promo.code,
+                        userId,
+                        bookingId: bookingData.bookingReferenceId,
+                        discount: promo.discount,
+                        payable: promo.payable,
+                        listedPrice: promo.listedPrice,
+                    });
+                    if (!redeemed.ok) {
+                        console.warn("[HOTEL PROMO] redeem failed", redeemed.message);
+                    }
+                } catch (redeemErr) {
+                    console.warn("[HOTEL PROMO] redeem error", redeemErr?.message);
+                }
+            }
             await enqueueHotelBookingEmail({
                 hotelBookingData: {
                     data: [{
