@@ -11,6 +11,8 @@ import {
   getSessionId,
   isHotelSupplierConfirmed,
 } from "./helper.js";
+import { parseStoredPromo } from "./hotelPromoBind.js";
+import { redeemMarkupsPromo } from "./markupsPromoClient.js";
 import {
   HOTEL_PENDING_POLL_STATUSES,
   acquireHotelPollLock,
@@ -75,18 +77,35 @@ const buildEmailBookingData = (supplierData, stored, payload) => {
       storedPassengers = [];
     }
   }
+  let storedHotel = stored?.hotel;
+  if (typeof storedHotel === "string") {
+    try {
+      storedHotel = JSON.parse(storedHotel);
+    } catch {
+      storedHotel = {};
+    }
+  }
+  const promo = parseStoredPromo(stored?.promo);
+  const mergedHotel = {
+    ...(supplierData?.hotel || {}),
+    ...(storedHotel || {}),
+    hotelKey:
+      storedHotel?.hotelKey ||
+      supplierData?.hotel?.hotelKey ||
+      payload.hotelKey,
+    passengers:
+      storedHotel?.passengers ||
+      supplierData?.hotel?.passengers ||
+      supplierData?.passengers ||
+      storedPassengers ||
+      [],
+  };
+  if (storedHotel?.totalNet != null) mergedHotel.totalNet = storedHotel.totalNet;
   return {
     data: [{
       ...supplierData,
-      hotel: {
-        ...(supplierData?.hotel || {}),
-        hotelKey: supplierData?.hotel?.hotelKey || payload.hotelKey,
-        passengers:
-          supplierData?.hotel?.passengers ||
-          supplierData?.passengers ||
-          storedPassengers ||
-          [],
-      },
+      hotel: mergedHotel,
+      promo: promo || undefined,
     }],
   };
 };
@@ -125,6 +144,25 @@ const maybeQueueConfirmationEmail = async ({
 
   if (stored?.confirmationEmailQueuedAt) {
     return { queued: false, reason: "already_queued" };
+  }
+
+  const promo = parseStoredPromo(stored?.promo);
+  if (promo?.code) {
+    try {
+      const redeemed = await redeemMarkupsPromo({
+        code: promo.code,
+        userId: payload.userId || stored?.userId,
+        bookingId: payload.bookingReferenceId,
+        discount: promo.discount,
+        payable: promo.payable,
+        listedPrice: promo.listedPrice,
+      });
+      if (!redeemed.ok) {
+        console.warn("[HOTEL PROMO] pending redeem failed", redeemed.message);
+      }
+    } catch (err) {
+      console.warn("[HOTEL PROMO] pending redeem error", err?.message);
+    }
   }
 
   try {

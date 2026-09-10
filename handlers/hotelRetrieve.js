@@ -5,8 +5,22 @@ import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { applyHotelMarkupsOnResponse } from "../helper/applyHotelMarkups.js";
 import { verifyToken } from "./authorizerLayer.js";
-import { DynamoDBClient, UpdateItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
+import { unmarshall } from "@aws-sdk/util-dynamodb";
+import { foldPromoOntoHotelTotal, parseStoredPromo } from "../helper/hotelPromoBind.js";
+
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
+
+const getPreBookRow = async (bookingKey) => {
+    if (!bookingKey) return null;
+    const result = await dynamo.send(
+        new GetItemCommand({
+            TableName: process.env.HOTEL_PRE_BOOK_TABLE,
+            Key: { bookingKey: { S: bookingKey } },
+        })
+    );
+    return result.Item ? unmarshall(result.Item) : null;
+};
 
 const BASE_URL = process.env.BASE_URL;
 const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // seconds
@@ -87,9 +101,25 @@ export const handler = async (event) => {
             };
         }
 
-        // Prepare payload
+        let provesioBookingReferenceId = bookingReferenceId;
+        let storedPromo = null;
+        if (bookingKey) {
+            try {
+                const preBook = await getPreBookRow(bookingKey);
+                storedPromo = parseStoredPromo(preBook?.promo);
+                const storedRef = String(preBook?.bookingReferenceId ?? "").trim();
+                // Payment hydrate sends the hold UUID as bookingReferenceId.
+                if (storedRef && bookingReferenceId === bookingKey) {
+                    provesioBookingReferenceId = storedRef;
+                }
+            } catch (err) {
+                console.warn("[HOTEL PROMO] retrieve pre-book promo", err?.message);
+            }
+        }
+
         const searchPayload = {
             ...body,
+            bookingReferenceId: provesioBookingReferenceId,
         };
 
         console.log("searchPayload**********", searchPayload);
@@ -123,6 +153,35 @@ export const handler = async (event) => {
         await logTrace(payload);
 
         await applyHotelMarkupsOnResponse(searchResp.data);
+
+        if (!storedPromo && provesioBookingReferenceId) {
+            try {
+                const bookQ = await dynamo.send(
+                    new QueryCommand({
+                        TableName: process.env.HOTEL_BOOK_TABLE,
+                        KeyConditionExpression: "bookingReferenceId = :id",
+                        ExpressionAttributeValues: {
+                            ":id": { S: provesioBookingReferenceId },
+                        },
+                        Limit: 1,
+                    })
+                );
+                const row = bookQ.Items?.[0] ? unmarshall(bookQ.Items[0]) : null;
+                storedPromo = parseStoredPromo(row?.promo);
+            } catch (err) {
+                console.warn("[HOTEL PROMO] retrieve book promo", err?.message);
+            }
+        }
+        if (storedPromo) {
+            const hotels = Array.isArray(searchResp.data?.data)
+                ? searchResp.data.data
+                : [];
+            for (const row of hotels) {
+                if (row?.hotel) foldPromoOntoHotelTotal(row.hotel, storedPromo);
+                row.promo = storedPromo;
+            }
+            searchResp.data.promo = storedPromo;
+        }
 
         searchResp.data['sessionId'] = sessionId
         searchResp.data['conversationId'] = conversationId
