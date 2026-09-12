@@ -5,38 +5,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "deploy:dev": "serverless deploy --config serverless-dev.yaml --stage dev",
-    "deploy:hotelDetail": "serverless deploy function -f hotelDetail --config serverless-dev.yaml --stage dev",
-    "deploy:getHotelReviews": "serverless deploy function -f getHotelReviews --config serverless-dev.yaml --stage dev",
-    "deploy:getReviewsOverview": "serverless deploy function -f getReviewsOverview --config serverless-dev.yaml --stage dev",
-    "push:hotelDetail": "bash scripts/push-hotelDetail-code.sh hotel-search-dev-hotelDetail",
-    "push:hotelDetail:qa": "bash scripts/push-hotelDetail-code.sh hotel-search-qa-hotelDetail",
-    "push:getHotelReviews": "bash scripts/push-hotelDetail-code.sh hotel-search-dev-getHotelReviews",
-    "push:imageProxy": "bash scripts/push-imageProxy-code.sh hotel-search-dev-imageProxy",
-    "push:imageProxy:qa": "bash scripts/push-imageProxy-code.sh hotel-search-qa-imageProxy",
-    "push:imageProxy:prod": "bash scripts/push-imageProxy-code.sh hotel-search-prod-imageProxy",
-    "push:hotelBooking": "bash scripts/push-hotelBooking-code.sh hotel-search-dev-hotelBooking",
-    "push:hotelBooking:qa": "bash scripts/push-hotelBooking-code.sh hotel-search-qa-hotelBooking",
-    "push:paymentSession": "bash scripts/push-payment-session-code.sh dev",
-    "push:paymentSession:qa": "bash scripts/push-payment-session-code.sh qa",
-    "push:unifiedPayment": "bash scripts/push-payment-session-code.sh dev",
-    "push:unifiedPayment:qa": "bash scripts/push-payment-session-code.sh qa",
-    "deploy:createHotelUnifiedPaymentSession": "echo 'Use Option B: npm run setup:unifiedPaymentSession or npm run push:unifiedPayment' && exit 1",
-    "deploy:hotelBooking": "set -a && [ -f .env ] && . ./.env; set +a && serverless deploy function -f hotelBooking --config serverless-dev.yaml --stage dev",
-    "set:unifiedPaymentSession:env": "bash scripts/set-unified-payment-session-env.sh dev",
-    "set:redisHost:env": "bash scripts/fix-redis-host-env.sh dev",
-    "set:redisHost:env:qa": "bash scripts/fix-redis-host-env.sh qa",
-    "patch:userFilterIam": "bash scripts/patch-user-filter.sh dev",
-    "patch:userFilterIam:qa": "bash scripts/patch-user-filter.sh qa",
-    "setup:unifiedPaymentSession": "bash scripts/setup-unified-payment-session-infra.sh dev",
-    "setup:unifiedPaymentSession:qa": "bash scripts/setup-unified-payment-session-infra.sh qa",
-    "set:imageProxy:giata-env": "bash scripts/set-imageProxy-giata-env.sh",
-    "set:imageProxy:giata-env:qa": "bash scripts/set-imageProxy-giata-env-qa.sh",
-    "deploy:qa": "serverless deploy --config serverless-qa.yaml --stage qa",
-    "test": "node --test lib/*.test.js",
-    "test:geo": "node --test lib/geoSearchAnchor.test.js",
-    "test:places": "node --test lib/googlePlacesAutocomplete.test.js lib/placesCacheHeaders.test.js",
-    "test:provesio": "node --test lib/resolveProvesioCity.test.js"
+    "deploy:dev": "serverless deploy --config serverless-dev.yml --stage dev",
+    "deploy:qa": "serverless deploy --config serverless-qa.yml --stage qa",
+    "deploy:prod": "serverless deploy --config serverless-prod.yml --stage prod"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.700.0",
@@ -52,6 +23,7 @@
   "devDependencies": {
     "serverless": "^3.39.0",
     "serverless-dotenv-plugin": "^6.0.0",
+    "serverless-prune-plugin": "^2.1.0",
     "serverless-ssm-fetch": "^2.0.0"
   }
 }
