@@ -1,0 +1,582 @@
+service: hotel-search
+frameworkVersion: "3"
+
+custom:
+  serverlessSsmFetch:
+    USERNAME: /provesio/username~true
+    PASSWORD: /provesio/password~true
+    COMPANY_CODE: /provesio/companycode~true
+    X_API_KEY: /provesio/xapikey~true
+    BASE_URL: /provesio/baseurl~true
+    COGNITO_CLIENT_ID: /provesio/cognitouserid~true
+    GUEST_JWT_SECRET: /provesio/jwtguestsecret~true
+    COGNITO_USERPOOL_ID: /provesio/cognitouserpoolid~true
+    GIATA_USERNAME: /al-rais/prod/giata/username
+    GIATA_PASSWORD: /al-rais/prod/giata/password~true
+
+  prune:
+    automatic: true
+    number: 3
+
+  authorizerLayer: arn:aws:lambda:${aws:region}:${aws:accountId}:layer:authorizerLayer:1
+
+  cors:
+    origin: '*'
+    headers:
+    - Content-Type
+    - X-API-KEY
+    - user_type
+    - user_id
+    - Authorization
+    allowCredentials: true
+
+  corsImage:
+    origin: '*'
+    headers:
+    - Content-Type
+    - X-API-KEY
+    - user_type
+    - user_id
+    - Authorization
+    allowCredentials: true
+    maxAge: 86400
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: eu-west-1
+  stage: ${opt:stage, 'prod'}
+  timeout: 60
+  memorySize: 512
+
+  vpc:
+    securityGroupIds:
+    - !Ref LambdaSecurityGroup
+    subnetIds:
+    - subnet-08e3e5f2ff7317b17
+    - subnet-062ad9a4fe69c4088
+
+  iam:
+    role:
+      statements:
+      - Effect: Allow
+        Action:
+        - s3:PutObject
+        - s3:PutObjectAcl
+        - s3:PutObjectTagging
+        Resource: arn:aws:s3:::log-trace-prod/*
+
+      - Effect: Allow
+        Action:
+        - sqs:SendMessage
+        - sqs:ReceiveMessage
+        - sqs:DeleteMessage
+        - sqs:GetQueueAttributes
+        Resource:
+        - arn:aws:sqs:${aws:region}:${aws:accountId}:add-log-queue-${self:provider.stage}
+        - arn:aws:sqs:${aws:region}:${aws:accountId}:add-to-cart-queue-${self:provider.stage}
+        - arn:aws:sqs:${aws:region}:${aws:accountId}:update-expired-hotel-booking-queue-${self:provider.stage}
+        - arn:aws:sqs:${aws:region}:${aws:accountId}:invoke-hotel-booking-email-${self:provider.stage}
+
+      - Effect: Allow
+        Action:
+        - sqs:SendMessage
+        - sqs:GetQueueAttributes
+        Resource: arn:aws:sqs:${aws:region}:${aws:accountId}:send-email-notification-${self:provider.stage}
+
+      - Effect: Allow
+        Action:
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:Query
+        Resource:
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/logtrace-${self:provider.stage}
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/logtrace-${self:provider.stage}/index/*
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-book-${self:provider.stage}
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-book-${self:provider.stage}/index/*
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-pre-book-${self:provider.stage}
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-pre-book-${self:provider.stage}/index/*
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-cancellation-${self:provider.stage}
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-cancellation-policies-${self:provider.stage}
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/search-filter-${self:provider.stage}
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/search-filter-${self:provider.stage}/index/*
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/users-${self:provider.stage}
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/users-${self:provider.stage}/index/*
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-google-places-${self:provider.stage}
+        - arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/hotel-google-places-${self:provider.stage}/index/*
+
+      - Effect: Allow
+        Action:
+        - dynamodb:GetItem
+        - dynamodb:BatchGetItem
+        Resource: arn:aws:dynamodb:${aws:region}:${aws:accountId}:table/markups-${self:provider.stage}
+
+      - Effect: Allow
+        Action: lambda:InvokeFunction
+        Resource: arn:aws:lambda:${aws:region}:${aws:accountId}:function:al-rais-giata-svc-${self:provider.stage}-enrich
+
+  environment:
+    STAGE: ${self:provider.stage}
+    REGION: eu-west-1
+    region: eu-west-1
+    USERNAME: ${self:custom.serverlessSsmFetch.USERNAME}
+    PASSWORD: ${self:custom.serverlessSsmFetch.PASSWORD}
+    COMPANY_CODE: ${self:custom.serverlessSsmFetch.COMPANY_CODE}
+    X_API_KEY: ${self:custom.serverlessSsmFetch.X_API_KEY}
+    BASE_URL: ${self:custom.serverlessSsmFetch.BASE_URL}
+    COGNITO_CLIENT_ID: ${self:custom.serverlessSsmFetch.COGNITO_CLIENT_ID}
+    COGNITO_USERPOOL_ID: ${self:custom.serverlessSsmFetch.COGNITO_USERPOOL_ID}
+    COGNITO_REGION: eu-west-1
+    GUEST_JWT_SECRET: ${self:custom.serverlessSsmFetch.GUEST_JWT_SECRET}
+    GUEST_TOKEN_TTL: "19800"
+    DDB_RATE_TABLE: AuthMiddlewareRateTable
+    REDIS_HOST: redis-rg-prod.nwwpvi.ng.0001.euw1.cache.amazonaws.com
+    REDIS_PORT: "6379"
+    CACHE_TTL_DEFAULT: "60"
+    ASYNC_POLL_INTERVAL_MS: "3000"
+    ASYNC_POLL_MAX_ATTEMPTS: "10"
+    LOG_TRACE_SQS: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/add-log-queue-${self:provider.stage}
+    LOG_TRACE_BUCKET: log-trace-prod
+    LOG_TRACE_TABLE: logtrace-${self:provider.stage}
+    HOTEL_PRE_BOOK_TABLE: hotel-pre-book-${self:provider.stage}
+    HOTEL_BOOK_TABLE: hotel-book-${self:provider.stage}
+    HOTEL_CANCELLATION_TABLE: hotel-cancellation-${self:provider.stage}
+    HOTEL_CANCELLATION_POLICY_TABLE: hotel-cancellation-policies-${self:provider.stage}
+    HOTEL_GOOGLE_PLACES_TABLE: hotel-google-places-${self:provider.stage}
+    HOTEL_PAYMENT_SESSION_TABLE: hotel-payment-session-${self:provider.stage}
+    USERS_TABLE: users-${self:provider.stage}
+    USER_FILTER_TABLE: search-filter-${self:provider.stage}
+    ADD_TO_CART_QUEUE: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/add-to-cart-queue-${self:provider.stage}
+    UPDATE_EXPIRED_HOTEL_BOOKING: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/update-expired-hotel-booking-queue-${self:provider.stage}
+    INVOKE_EMAIL_QUEUE: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/invoke-hotel-booking-email-${self:provider.stage}
+    SEND_EMAIL_QUEUE: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/send-email-notification-${self:provider.stage}
+    INTERNAL_BASE_URL: https://28jj8886ja.execute-api.eu-west-1.amazonaws.com
+    INTERNAL_SUPPLIER_ROUTING_KEY: dev-internal-supplier-routing-key
+    GEO_GEOCODE_CACHE_TTL: "604800"
+    GEO_PLACES_AUTOCOMPLETE_CACHE_TTL: "259200"
+    GEO_PLACES_DETAILS_CACHE_TTL: "604800"
+    GEO_SEARCH_DEFAULT_RADIUS_KM: "5"
+    GOOGLE_PLACES_API_KEY: AIzaSyBamLDqEqziMx5W3JyXLboBwidnqQDLXJg
+    GOOGLE_REVIEWS_CACHE_TTL: "21600"
+    GIATA_ENRICHMENT_ENABLED: "true"
+    GIATA_ENRICH_FUNCTION_ARN: arn:aws:lambda:${aws:region}:${aws:accountId}:function:al-rais-giata-svc-${self:provider.stage}-enrich
+    GIATA_USERNAME: ${self:custom.serverlessSsmFetch.GIATA_USERNAME}
+    GIATA_PASSWORD: ${self:custom.serverlessSsmFetch.GIATA_PASSWORD}
+    MARKUPS_TABLE: markups-${self:provider.stage}
+    MARKUPS_API_BASE: https://pssvhprlpl.execute-api.eu-west-1.amazonaws.com/prod
+    UNIFIED_SESSIONS_API_BASE: https://1wo8ihkto6.execute-api.eu-west-1.amazonaws.com/prod
+    UNIFIED_SESSIONS_WRITE_SECRET: 2c9347d5d14015b4476f4e47699c63c3d0814534e510d260f0df557eab6d4954
+
+package:
+  patterns:
+  - '!./**'
+  - handlers/**
+  - helper/**
+  - lib/**
+  - '!lib/**/*.test.js'
+  - package.json
+  - package-lock.json
+  - node_modules/**
+  - '!node_modules/aws-sdk/**'
+  - '!node_modules/**/test/**'
+  - '!node_modules/**/tests/**'
+  - '!node_modules/**/docs/**'
+  - '!node_modules/**/examples/**'
+  - '!node_modules/**/*.md'
+  - '!node_modules/**/*.ts'
+  - '!node_modules/**/*.map'
+  excludeDevDependencies: true
+
+functions:
+  hotelSearch:
+    handler: handlers/hotelSearch.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelSearch
+        method: post
+        cors: ${self:custom.cors}
+
+  placesAutocomplete:
+    handler: handlers/placesAutocomplete.handler
+    timeout: 30
+    memorySize: 256
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /places/autocomplete
+        method: get
+        cors: ${self:custom.cors}
+
+  placesDetails:
+    handler: handlers/placesDetails.handler
+    timeout: 30
+    memorySize: 256
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /places/details
+        method: get
+        cors: ${self:custom.cors}
+
+  hotelDetail:
+    handler: handlers/hotelDetail.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelDetail
+        method: post
+        cors: ${self:custom.cors}
+
+  getMoreRooms:
+    handler: handlers/getMoreRooms.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /getMoreRooms
+        method: post
+        cors: ${self:custom.cors}
+
+  hotelPreBook:
+    handler: handlers/hotelPreBook.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelPreBook
+        method: post
+        cors: ${self:custom.cors}
+
+  hotelBooking:
+    handler: handlers/hotelBooking.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelBooking
+        method: post
+        cors: ${self:custom.cors}
+
+  hotelRetrieve:
+    handler: handlers/hotelRetrieve.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelRetrieve
+        method: post
+        cors: ${self:custom.cors}
+
+  hotelCancellation:
+    handler: handlers/hotelCancellation.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCancellation
+        method: post
+        cors: ${self:custom.cors}
+
+  getHotelCancellationPolicy:
+    handler: handlers/getHotelCancellationPolicy.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /getHotelCancellationPolicy
+        method: post
+        cors: ${self:custom.cors}
+
+  getHotelCancellationCharges:
+    handler: handlers/getHotelCancellationCharges.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /getHotelCancellationCharges
+        method: post
+        cors: ${self:custom.cors}
+
+  getAdminHotelCancellationPolicy:
+    handler: handlers/getAdminHotelCancellationPolicy.handler
+    timeout: 30
+    events:
+    - http:
+        path: /getAdminHotelCancellationPolicy
+        method: post
+        cors: ${self:custom.cors}
+
+  myHotelBooking:
+    handler: handlers/myHotelBooking.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /myHotelBooking
+        method: post
+        cors: ${self:custom.cors}
+
+  checkHotelBookingStatus:
+    handler: handlers/checkHotelBookingStatus.handler
+    timeout: 120
+    environment:
+      HOTEL_STATUS_POLL_BATCH_SIZE: "10"
+      HOTEL_STATUS_POLL_INTERVAL_MS: "300000"
+      HOTEL_STATUS_POLL_LOCK_TTL_SEC: "900"
+      HOTEL_STATUS_POLL_MAX_AGE_MS: "172800000"
+      HOTEL_STATUS_POLL_MAX_DUE: "50"
+      HOTEL_STATUS_POLL_RECONCILE_INTERVAL_MS: "86400000"
+    events:
+    - http:
+        path: /checkHotelBookingStatus
+        method: post
+        cors: ${self:custom.cors}
+    - schedule:
+        rate: rate(1 minute)
+        enabled: true
+
+  imageProxy:
+    handler: handlers/imageProxy.handler
+    timeout: 30
+    events:
+    - http:
+        path: /imageProxy
+        method: get
+        cors: ${self:custom.corsImage}
+
+  updateExpiredHotelBooking:
+    handler: handlers/updateExpiredHotelBooking.handler
+    timeout: 120
+    memorySize: 1024
+    events:
+    - sqs:
+        arn: !GetAtt updateExpiredHotelBooking.Arn
+        batchSize: 10
+
+  createHotelUnifiedPaymentSession:
+    handler: handlers/createHotelUnifiedPaymentSession.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelUnifiedPaymentSession
+        method: post
+        cors: ${self:custom.cors}
+
+  getHotelReviews:
+    handler: handlers/getHotelReviews.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /getHotelReviews
+        method: get
+        cors: ${self:custom.cors}
+
+  getReviewsOverview:
+    handler: handlers/getReviewsOverview.handler
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /getReviewsOverview
+        method: post
+        cors: ${self:custom.cors}
+
+resources:
+  Resources:
+    LambdaSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Security group for hotel-search Lambdas
+        VpcId: vpc-014652d2ee7151658
+        SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+    RedisSecurityGroupIngress:
+      Type: AWS::EC2::SecurityGroupIngress
+      Properties:
+        IpProtocol: tcp
+        FromPort: 6379
+        ToPort: 6379
+        GroupId: sg-031e9942c3d60eb70
+        SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+    updateExpiredHotelBooking:
+      Type: AWS::SQS::Queue
+      DeletionPolicy: Retain
+      Properties:
+        QueueName: update-expired-hotel-booking-queue-${self:provider.stage}
+        VisibilityTimeout: 300
+        MessageRetentionPeriod: 86400
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt updateExpiredHotelBookingDLQ.Arn
+          maxReceiveCount: 5
+
+    updateExpiredHotelBookingDLQ:
+      Type: AWS::SQS::Queue
+      DeletionPolicy: Retain
+      Properties:
+        QueueName: update-expired-hotel-booking-dlq-${self:provider.stage}
+        MessageRetentionPeriod: 1209600
+
+    HotelPreBookTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      Properties:
+        TableName: hotel-pre-book-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+        - AttributeName: bookingKey
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+        KeySchema:
+        - AttributeName: bookingKey
+          KeyType: HASH
+        GlobalSecondaryIndexes:
+        - IndexName: status-bookingKey-index
+          KeySchema:
+          - AttributeName: status
+            KeyType: HASH
+          - AttributeName: bookingKey
+            KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: userId-status-index
+          KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: status
+            KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+    HotelBookTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      Properties:
+        TableName: hotel-book-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+        - AttributeName: bookingReferenceId
+          AttributeType: S
+        - AttributeName: hotelKey
+          AttributeType: S
+        KeySchema:
+        - AttributeName: bookingReferenceId
+          KeyType: HASH
+        - AttributeName: hotelKey
+          KeyType: RANGE
+
+    HotelCancellationTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      Properties:
+        TableName: hotel-cancellation-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+        - AttributeName: bookingReferenceId
+          AttributeType: S
+        - AttributeName: bookingStatus
+          AttributeType: S
+        KeySchema:
+        - AttributeName: bookingReferenceId
+          KeyType: HASH
+        - AttributeName: bookingStatus
+          KeyType: RANGE
+
+    HotelCancellationPolicyTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      Properties:
+        TableName: hotel-cancellation-policies-${self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+        - AttributeName: hotelKey
+          AttributeType: S
+        - AttributeName: searchKey
+          AttributeType: S
+        KeySchema:
+        - AttributeName: hotelKey
+          KeyType: HASH
+        - AttributeName: searchKey
+          KeyType: RANGE
+        TimeToLiveSpecification:
+          AttributeName: ttl
+          Enabled: true
+
+    PlacesAutocompleteCachePolicy:
+      Type: AWS::CloudFront::CachePolicy
+      Properties:
+        CachePolicyConfig:
+          Name: hotel-search-${self:provider.stage}-places-autocomplete
+          Comment: Cache GET /places/autocomplete by query params (not Authorization)
+          DefaultTTL: 259200
+          MaxTTL: 259200
+          MinTTL: 0
+          ParametersInCacheKeyAndForwardedToOrigin:
+            EnableAcceptEncodingGzip: true
+            EnableAcceptEncodingBrotli: true
+            HeadersConfig:
+              HeaderBehavior: none
+            CookiesConfig:
+              CookieBehavior: none
+            QueryStringsConfig:
+              QueryStringBehavior: whitelist
+              QueryStrings:
+              - q
+              - query
+              - countryBias
+              - country
+              - languageCode
+              - language
+
+    PlacesDetailsCachePolicy:
+      Type: AWS::CloudFront::CachePolicy
+      Properties:
+        CachePolicyConfig:
+          Name: hotel-search-${self:provider.stage}-places-details
+          Comment: Cache GET /places/details by placeId + language (not Authorization)
+          DefaultTTL: 604800
+          MaxTTL: 604800
+          MinTTL: 0
+          ParametersInCacheKeyAndForwardedToOrigin:
+            EnableAcceptEncodingGzip: true
+            EnableAcceptEncodingBrotli: true
+            HeadersConfig:
+              HeaderBehavior: none
+            CookiesConfig:
+              CookieBehavior: none
+            QueryStringsConfig:
+              QueryStringBehavior: whitelist
+              QueryStrings:
+              - placeId
+              - languageCode
+              - language
+
+  Outputs:
+    PlacesAutocompleteCachePolicyId:
+      Description: CloudFront cache policy ID for FE /places/autocomplete behavior
+      Value: !Ref PlacesAutocompleteCachePolicy
+    PlacesDetailsCachePolicyId:
+      Description: CloudFront cache policy ID for FE /places/details behavior
+      Value: !Ref PlacesDetailsCachePolicy
+    ApiGatewayUrl:
+      Description: Direct API Gateway base (hotelSearch and non-cached routes)
+      Value: !Sub https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${self:provider.stage}
+
+plugins:
+- serverless-ssm-fetch
+- serverless-prune-plugin
