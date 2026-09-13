@@ -37,8 +37,14 @@ const ISO2_TO_PROVESIO = {
   VI: "United States Virgin Islands",
   VG: "British Virgin Islands",
   CD: "Democratic Republic of the Congo",
+  TR: "Turkey",
+  CZ: "Czech Republic",
+  MK: "Macedonia",
+  MM: "Myanmar",
+  SZ: "Eswatini",
 };
 
+/** Modern / UI / Google labels → Provesio allowlist vendorCountry names */
 const LISTING_COUNTRY_TO_PROVESIO = {
   "hong kong, (sar) china": "Hong Kong",
   "macao, (sar) china": "Macau",
@@ -69,6 +75,12 @@ const LISTING_COUNTRY_TO_PROVESIO = {
   "st. vincent and the grenadines": "Saint Vincent and the Grenadines",
   "democratic republic of the congo": "Democratic Republic of the Congo",
   "british virgin islands": "British Virgin Islands",
+  // Official renames & common label variants (Provesio allowlist uses legacy names)
+  türkiye: "Turkey",
+  turkiye: "Turkey",
+  czechia: "Czech Republic",
+  "north macedonia": "Macedonia",
+  burma: "Myanmar",
 };
 
 function lookupAlias(raw) {
@@ -78,19 +90,20 @@ function lookupAlias(raw) {
 }
 
 export function toProvesioHotelCountry(country, countryCode) {
-  const code = String(countryCode || "").trim().toUpperCase();
+  const raw = String(country ?? "").trim();
+  if (!raw) return raw;
+
+  const aliasedFromLabel = lookupAlias(raw);
+  const code = String(countryCode ?? "").trim().toUpperCase();
+
   if (/^[A-Z]{2}$/.test(code) && ISO2_TO_PROVESIO[code]) {
     return ISO2_TO_PROVESIO[code];
   }
 
-  const raw = String(country || "").trim();
-  if (!raw) return raw;
-
-  const aliased = lookupAlias(raw);
-  if (aliased) return aliased;
+  if (aliasedFromLabel) return aliasedFromLabel;
 
   const commaParen = raw.match(/^([^,]+),\s*\(/);
-  if (commaParen && commaParen[1]) {
+  if (commaParen?.[1]) {
     const head = commaParen[1].trim();
     return lookupAlias(head) || head;
   }
