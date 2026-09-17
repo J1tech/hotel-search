@@ -336,11 +336,11 @@ export const enqueueHotelBookingEmail = async ({ hotelBookingData, userId, userT
   const queueUrl = process.env.INVOKE_EMAIL_QUEUE;
   if (!queueUrl) {
     console.log("INVOKE_EMAIL_QUEUE is not set, skipping hotel confirmation email");
-    return;
+    return false;
   }
   if (!userId) {
     console.log("No userId, skipping hotel confirmation email");
-    return;
+    return false;
   }
 
   try {
@@ -358,7 +358,9 @@ export const enqueueHotelBookingEmail = async ({ hotelBookingData, userId, userT
       })
     );
     console.log("Queued hotel confirmation email for userId:", userId);
+    return true;
   } catch (error) {
     console.error("Failed to queue hotel confirmation email:", error);
+    return false;
   }
 };
