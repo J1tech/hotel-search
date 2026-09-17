@@ -657,7 +657,7 @@ export const handler = async (event) => {
                     console.warn("[HOTEL PROMO] redeem error", redeemErr?.message);
                 }
             }
-            await enqueueHotelBookingEmail({
+            const emailQueued = await enqueueHotelBookingEmail({
                 hotelBookingData: {
                     data: [{
                         ...bookingData,
@@ -670,17 +670,24 @@ export const handler = async (event) => {
                 userId: authVerification?.context?.sub,
                 userType: authVerification?.context?.userType,
             });
-            try {
-                await markHotelConfirmationEmailQueued(
-                    dynamo,
-                    bookingData.bookingReferenceId,
-                    hotelKey
-                );
-            } catch (stampErr) {
-                console.warn(
-                    "confirmationEmailQueuedAt stamp skipped:",
-                    bookingData.bookingReferenceId,
-                    stampErr?.message
+            if (emailQueued) {
+                try {
+                    await markHotelConfirmationEmailQueued(
+                        dynamo,
+                        bookingData.bookingReferenceId,
+                        hotelKey
+                    );
+                } catch (stampErr) {
+                    console.warn(
+                        "confirmationEmailQueuedAt stamp skipped:",
+                        bookingData.bookingReferenceId,
+                        stampErr?.message
+                    );
+                }
+            } else {
+                console.error(
+                    "Hotel confirmation email was not queued; not stamping confirmationEmailQueuedAt:",
+                    bookingData.bookingReferenceId
                 );
             }
         } else if (isHotelPendingPollStatus(bookingData.bookingStatus)) {

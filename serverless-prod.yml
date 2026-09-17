@@ -360,6 +360,16 @@ functions:
         arn: !GetAtt updateExpiredHotelBooking.Arn
         batchSize: 10
 
+  # Bridge: hotel book → assemble voucher payload → alrais-email-notification
+  # (send-email-notification-prod). Required for confirmation emails.
+  invokeHotelBookingEmail:
+    handler: handlers/invokeHotelBookingEmail.handler
+    timeout: 60
+    events:
+    - sqs:
+        arn: !GetAtt InvokeHotelBookingEmailQueue.Arn
+        batchSize: 5
+
   createHotelUnifiedPaymentSession:
     handler: handlers/createHotelUnifiedPaymentSession.handler
     timeout: 30
@@ -428,6 +438,14 @@ resources:
       Properties:
         QueueName: update-expired-hotel-booking-dlq-${self:provider.stage}
         MessageRetentionPeriod: 1209600
+
+    InvokeHotelBookingEmailQueue:
+      Type: AWS::SQS::Queue
+      DeletionPolicy: Retain
+      Properties:
+        QueueName: invoke-hotel-booking-email-${self:provider.stage}
+        VisibilityTimeout: 300
+        MessageRetentionPeriod: 345600
 
     HotelPreBookTable:
       Type: AWS::DynamoDB::Table
