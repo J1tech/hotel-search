@@ -3,6 +3,10 @@ import { computeTTLFromSupplier, getSessionId, globalHeaders, logTrace, Internal
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
+// --- BEGIN GIATA (feature/giata-enrichment) ---
+import { invokeGiataEnrich } from "../lib/giataInvokeClient.js";
+import { resolveGiataIdentity } from "../lib/giataIdentityResolver.js";
+import { applyHotelMarkupsOnResponse, loadHotelModuleSources } from "../helper/applyHotelMarkups.js";
 import { verifyToken } from "./authorizerLayer.js";
 import {
     DynamoDBClient,
@@ -13,6 +17,78 @@ const dynamo = new DynamoDBClient({ region: process.env.region });
 
 const BASE_URL = process.env.BASE_URL;
 const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // seconds
+
+// --- BEGIN GIATA (feature/giata-enrichment) ---
+// Option 3 orchestrator: invoke al-rais-giata-svc enrich Lambda, merge giataEnrichment sibling.
+// Env: GIATA_ENRICHMENT_ENABLED, GIATA_ENRICH_FUNCTION_ARN | dep: @aws-sdk/client-lambda
+// Fail-safe: errors return Provesio-only (no 500). FE picks GIATA vs Provesio for images/texts.
+
+function buildGiataIncludeList() {
+    const include = ["images", "texts"];
+    if (process.env.GIATA_FACTSHEETS_ENABLED !== "false") {
+        include.push("factsheets");
+    }
+    return include;
+}
+
+async function enrichWithGiata(responseData, culture, giataHints = {}) {
+    if (process.env.GIATA_ENRICHMENT_ENABLED !== "true") {
+        console.info("GIATA skipped", JSON.stringify({ reason: "giata_disabled" }));
+        return responseData;
+    }
+
+    const row = responseData?.data?.[0];
+    const resolution = resolveGiataIdentity(row, giataHints, {
+        culture,
+        include: buildGiataIncludeList(),
+    });
+
+    if (!resolution.payload) {
+        console.warn("GIATA skipped", JSON.stringify({
+            reason: resolution.reason,
+            resolved: resolution.resolved,
+        }));
+        return responseData;
+    }
+
+    console.info("GIATA invoke", JSON.stringify({
+        reason: resolution.reason,
+        resolved: resolution.resolved,
+        payload: resolution.payload,
+    }));
+
+    try {
+        const result = await invokeGiataEnrich(resolution.payload);
+        if (result?.meta?.success && result?.data) {
+            console.info("GIATA enrichment attached", JSON.stringify({
+                reason: resolution.reason,
+                giataId: result.data.giataId ?? result.meta?.giataId,
+                imageCount: result.data.images?.length ?? 0,
+                hasTexts: result.data.texts != null,
+                factCount: result.data.factsheet?.factCount ?? result.data.factsheet?.facilities?.length ?? 0,
+                hasFactsheet: result.data.factsheet != null,
+            }));
+            responseData.giataEnrichment = result.data;
+        } else {
+            console.warn("GIATA returned unsuccessful response", JSON.stringify({
+                reason: "giata_unsuccessful_response",
+                resolutionReason: resolution.reason,
+                success: result?.meta?.success,
+                error: result?.meta?.error,
+                statusCode: result?.meta?.statusCode,
+            }));
+        }
+    } catch (err) {
+        console.error("GIATA enrichment failed", JSON.stringify({
+            reason: "giata_invoke_failed",
+            resolutionReason: resolution.reason,
+            message: err.message,
+        }), err.stack);
+    }
+
+    return responseData;
+}
+// --- END GIATA helpers ---
 
 export const handler = async (event) => {
     try {
@@ -35,8 +111,13 @@ export const handler = async (event) => {
         const {
             hotelKey,
             searchKey,
-            culture
+            culture,
+            cspId,
+            providerHotelId,
+            supplier,
         } = body || {};
+
+        const giataHints = { cspId, providerHotelId, supplier, hotelKey };
 
         // --- validation (your existing code) ---
         if (!hotelKey) {
@@ -90,12 +171,15 @@ export const handler = async (event) => {
             const cached = await redis.get(cacheKey);
 
             if (cached) {
-                // Return cache hit
                 console.info("Cache HIT for", cacheKey);
+                const parsedCache = JSON.parse(cached);
+                const responseData = await enrichWithGiata(parsedCache, culture, giataHints);
+                const sources = await loadHotelModuleSources();
+                await applyHotelMarkupsOnResponse(responseData, { sources });
                 return {
                     statusCode: 200,
                     ...globalHeaders(),
-                    body: cached, // already stringified
+                    body: JSON.stringify(responseData),
                 };
             }
             console.info("Cache MISS for", cacheKey);
@@ -166,7 +250,12 @@ export const handler = async (event) => {
         });
 
         await dynamo.send(updateCmd);
-        searchResp['data']['sessionId'] = sessionId
+
+        // --- BEGIN GIATA: enrich after Provesio, before response (not written to Redis cache) ---
+        await enrichWithGiata(searchResp.data, culture, giataHints);
+        const sources = await loadHotelModuleSources();
+        await applyHotelMarkupsOnResponse(searchResp.data, { sources });
+        searchResp.data.sessionId = sessionId;
         return {
             statusCode: 200,
             ...globalHeaders(),

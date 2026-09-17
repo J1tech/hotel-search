@@ -1,17 +1,129 @@
 import axios from "axios";
 import { computeTTLFromSupplier, getSessionId, globalHeaders, InternalError, logTrace } from "../helper/helper.js";
+import {
+    applyHotelMarkupsToHotel,
+    loadHotelModuleSources,
+    snapshotSupplierHotelPricing,
+} from "../helper/applyHotelMarkups.js";
+import { deepClone } from "../helper/objectUtils.js";
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
 import { verifyToken } from "./authorizerLayer.js";
-import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { getPreBookRow } from "../lib/hotelPaymentSession.js";
+import { previewPromoOnHotelHold } from "../helper/applyHotelPromo.js";
+import {
+    clearPromoBind,
+    setPromoBind,
+    stringifyPromo,
+} from "../helper/hotelPromoBind.js";
 
 const sqsClient = new SQSClient({
     region: "eu-west-1",
 });
 
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
+
+const persistPreBookPromo = async (bookingKey, promo) => {
+    const promoJson = stringifyPromo(promo);
+    const expressionAttributeNames = { "#prm": "promo" };
+    const expressionAttributeValues = {
+        ":updatedAt": { S: new Date().toISOString() },
+    };
+    const update = {
+        TableName: process.env.HOTEL_PRE_BOOK_TABLE,
+        Key: { bookingKey: { S: bookingKey } },
+        ExpressionAttributeNames: expressionAttributeNames,
+        ExpressionAttributeValues: expressionAttributeValues,
+    };
+    if (promoJson) {
+        update.UpdateExpression = "SET #prm = :promo, updatedAt = :updatedAt";
+        expressionAttributeValues[":promo"] = { S: promoJson };
+    } else {
+        update.UpdateExpression = "REMOVE #prm SET updatedAt = :updatedAt";
+    }
+    await dynamo.send(new UpdateItemCommand(update));
+};
+
+const json = (statusCode, body) => ({
+    statusCode,
+    ...globalHeaders(),
+    body: JSON.stringify(body),
+});
+
+const handleHotelPromoApply = async (authVerification, body) => {
+    const userId = authVerification?.context?.sub;
+    const bookingKey = String(body?.bookingKey ?? "").trim();
+    const remove = body?.remove === true;
+    const promoCode = body?.promoCode ?? body?.promo ?? "";
+
+    if (!userId) {
+        return json(401, { success: false, message: "Unauthorized: Invalid or expired token" });
+    }
+    if (!bookingKey) {
+        return json(400, { success: false, message: "bookingKey is required" });
+    }
+
+    const preBook = await getPreBookRow(bookingKey);
+    if (!preBook) {
+        return json(409, { success: false, message: "Pre-book expired, please search again" });
+    }
+    if (preBook.userId && preBook.userId !== userId) {
+        return json(403, { success: false, message: "Forbidden: booking does not belong to this user" });
+    }
+    if (preBook.status && preBook.status !== "pending") {
+        return json(410, { success: false, message: "Pre-book is no longer pending", code: "EXPIRED" });
+    }
+
+    const listedTotalNet = Number(preBook.totalNet);
+    const currency = preBook.currency || "AED";
+
+    if (remove || !String(promoCode).trim()) {
+        await clearPromoBind(userId, bookingKey);
+        await persistPreBookPromo(bookingKey, null);
+        return json(200, {
+            success: true,
+            data: {
+                bookingKey,
+                totalNet: listedTotalNet,
+                listedTotalNet,
+                promo: null,
+                currency,
+            },
+        });
+    }
+
+    const result = await previewPromoOnHotelHold({
+        preBook,
+        promoCode,
+        userId,
+    });
+    if (result.error) {
+        return json(result.status || 400, {
+            success: false,
+            message: result.error,
+        });
+    }
+
+    await persistPreBookPromo(bookingKey, result.promo);
+    try {
+        await setPromoBind(userId, bookingKey, result.promo);
+    } catch (error) {
+        console.error("setPromoBind failed after Dynamo persist:", error?.message || error);
+    }
+    return json(200, {
+        success: true,
+        data: {
+            bookingKey,
+            totalNet: result.promo.payable,
+            listedTotalNet: result.promo.listedPrice,
+            promo: result.promo,
+            currency,
+        },
+    });
+};
 
 const BASE_URL = process.env.BASE_URL;
 const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // seconds
@@ -35,6 +147,10 @@ export const handler = async (event) => {
 
         const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
         // const conversationId = uuidv4();
+
+        if (body?.applyHotelPromo === true) {
+            return await handleHotelPromoApply(authVerification, body);
+        }
 
         const {
             rooms,
@@ -147,11 +263,29 @@ export const handler = async (event) => {
             "searchResp.data.data[0]:",
             JSON.stringify(searchResp?.data?.data?.[0], null, 2)
         );
-        const { hotel, mandatoryBookData } = searchResp?.data?.data[0]
+        const { hotel, mandatoryBookData } = searchResp?.data?.data?.[0]
         console.log("hotel*****************", hotel);
         console.log("mandatoryBookData*dsdadasd*******", mandatoryBookData);
 
-        const { hotelKey: preBookHotelKey, bookingKey, name, totalNet, currency, checkInDate, checkOutDate, priceChangeIndicator, rooms: preBookRooms, verifiedPropertyInfo, sequenceNo } = hotel
+        const supplierPricing = snapshotSupplierHotelPricing(hotel);
+        const clientHotel = deepClone(hotel);
+        const sources = await loadHotelModuleSources();
+        await applyHotelMarkupsToHotel(clientHotel, { sources });
+        searchResp.data.data[0].hotel = clientHotel;
+
+        const {
+            hotelKey: preBookHotelKey,
+            bookingKey,
+            name,
+            totalNet,
+            currency,
+            checkInDate,
+            checkOutDate,
+            priceChangeIndicator,
+            rooms: preBookRooms,
+            verifiedPropertyInfo,
+            sequenceNo,
+        } = clientHotel;
         console.log("preBookHotelKey******", preBookHotelKey);
 
         const hotelPreBookObj = {
@@ -159,11 +293,13 @@ export const handler = async (event) => {
             hotelKey: preBookHotelKey,
             name,
             totalNet,
+            supplierTotalNet: supplierPricing?.totalNet,
             currency,
             priceChangeIndicator,
             checkInDate,
             checkOutDate,
             rooms: JSON.stringify(preBookRooms),
+            supplierRooms: JSON.stringify(supplierPricing?.rooms || []),
             verifiedPropertyInfo: JSON.stringify(verifiedPropertyInfo),
             sequenceNo,
             mandatoryBookData: JSON.stringify(mandatoryBookData),
@@ -185,6 +321,7 @@ export const handler = async (event) => {
                 hotelKey: { S: hotelPreBookObj.hotelKey },
                 name: { S: hotelPreBookObj.name },
                 totalNet: { S: String(hotelPreBookObj.totalNet) },
+                supplierTotalNet: { S: String(hotelPreBookObj.supplierTotalNet ?? hotelPreBookObj.totalNet) },
                 currency: { S: hotelPreBookObj.currency },
                 priceChangeIndicator: { BOOL: Boolean(hotelPreBookObj.priceChangeIndicator) },
                 checkInDate: { S: hotelPreBookObj.checkInDate },
@@ -192,6 +329,7 @@ export const handler = async (event) => {
 
                 // 📦 Complex objects (stringified)
                 rooms: { S: hotelPreBookObj.rooms },
+                supplierRooms: { S: hotelPreBookObj.supplierRooms },
                 verifiedPropertyInfo: { S: hotelPreBookObj.verifiedPropertyInfo },
                 mandatoryBookData: { S: hotelPreBookObj.mandatoryBookData },
                 request: { S: hotelPreBookObj.request },

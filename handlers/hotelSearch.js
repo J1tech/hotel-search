@@ -3,7 +3,18 @@ import { computeTTLFromSupplier, getSessionId, globalHeaders, logTrace, Internal
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
+import { toProvesioHotelCountry } from "../helper/provesioHotelCountry.js";
+import { resolveProvesioCity } from "../lib/resolveProvesioCity.js";
+import {
+    applyHotelMarkupsOnResponse,
+    loadHotelModuleSources,
+} from "../helper/applyHotelMarkups.js";
 import { verifyToken } from "./authorizerLayer.js";
+import {
+    applyGeoSearchToResponse,
+    GeoSearchError,
+    resolveSearchAnchor,
+} from "../lib/geoSearchAnchor.js";
 import {
     DynamoDBClient,
     QueryCommand,
@@ -83,7 +94,8 @@ export const handler = async (event) => {
         }
         const body = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
         const {
-            country,
+            country: rawCountry,
+            countryCode,
             city,
             checkIn,
             checkOut,
@@ -92,8 +104,10 @@ export const handler = async (event) => {
             travelerNationality,
             culture,
             filters,
-            browserId
+            browserId,
+            searchAnchor,
         } = body || {};
+        const country = toProvesioHotelCountry(rawCountry, countryCode);
 
 
         let previousUsedFilters = { Items: [] };
@@ -135,6 +149,54 @@ export const handler = async (event) => {
             return { ...globalHeaders(), statusCode: 400, body: JSON.stringify({ message: "currency is required" }) };
         }
 
+        const cityResolution = resolveProvesioCity({ city, country, searchAnchor });
+        const provesioCity = cityResolution.provesioCity;
+        if (cityResolution.resolution !== "allowlist" || cityResolution.inputCity !== provesioCity) {
+            console.log("provesioCityResolution", cityResolution);
+        }
+
+        let resolvedSearchAnchor = null;
+        if (searchAnchor != null) {
+            if (typeof searchAnchor !== "object") {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 400,
+                    body: JSON.stringify({ message: "searchAnchor must be an object" }),
+                };
+            }
+            try {
+                resolvedSearchAnchor = await resolveSearchAnchor(searchAnchor, provesioCity);
+                if (!resolvedSearchAnchor) {
+                    return {
+                        ...globalHeaders(),
+                        statusCode: 400,
+                        body: JSON.stringify({
+                            message: "searchAnchor requires latitude/longitude or nearPlace",
+                        }),
+                    };
+                }
+            } catch (error) {
+                if (error instanceof GeoSearchError) {
+                    return {
+                        ...globalHeaders(),
+                        statusCode: error.statusCode,
+                        body: JSON.stringify({ message: error.message }),
+                    };
+                }
+                throw error;
+            }
+        }
+
+        const finalizeSearchResponse = async (responseData, sources) => {
+            responseData.previousFilter =
+                previousUsedFilters.Items?.map((item) => unmarshall(item)) || [];
+            await applyHotelMarkupsOnResponse(responseData, { sources });
+            if (resolvedSearchAnchor) {
+                applyGeoSearchToResponse(responseData, resolvedSearchAnchor, searchAnchor);
+            }
+            return responseData;
+        };
+
         // Session ID
         let { sessionId, conversationId } = await getSessionId(
             authVerification?.context?.sub,
@@ -156,24 +218,24 @@ export const handler = async (event) => {
         filters['payAtHotelRates'] = false;
 
         const searchPayload = {
-            country, city, checkIn, checkOut, rooms,
+            country, city: provesioCity, checkIn, checkOut, rooms,
             travelerCountryOfResidence, travelerNationality, culture, filters
         };
 
         // --- Cache check ---
-        const cacheKey = createCacheKey({ country, city, checkIn, checkOut, rooms, filters }, "hotelSearch");
+        const cacheKey = createCacheKey({ country, city: provesioCity, checkIn, checkOut, rooms, filters }, "hotelSearch");
         console.log("cacheKey**********", cacheKey);
 
         try {
             const cached = await redis.get(cacheKey);
             if (cached) {
-
-                cached['previousFilter'] = previousUsedFilters.Items?.map(item => unmarshall(item)) || [];
-
+                const parsedCache = JSON.parse(cached);
+                const sources = await loadHotelModuleSources();
+                await finalizeSearchResponse(parsedCache, sources);
                 return {
                     statusCode: 200,
                     ...globalHeaders(),
-                    body: cached,
+                    body: JSON.stringify(parsedCache),
                 };
             }
         } catch (redisErr) {
@@ -208,29 +270,16 @@ export const handler = async (event) => {
             );
         }
 
+        let hotelSources = [];
         try {
-            const supplierConfig = await axios.get(
-                `${process.env.INTERNAL_BASE_URL}/internal/module-config?module=hotels`,
-                {
-                    headers: {
-                        "X-Internal-Api-Key": process.env.INTERNAL_SUPPLIER_ROUTING_KEY,
-                    },
-                    timeout: 10000,
-                }
-            );
-
-            // Build inactive supplier list
+            hotelSources = await loadHotelModuleSources();
             const inactiveSuppliers = new Set();
-
-            const sources = supplierConfig?.data?.items?.[0]?.sources || [];
-
-            sources.forEach((source) => {
-                if (!source.active) {
-                    inactiveSuppliers.add(source.name.trim().toLowerCase());
+            for (const source of hotelSources) {
+                if (source && source.active === false && source.name) {
+                    inactiveSuppliers.add(String(source.name).trim().toLowerCase());
                 }
-            });
+            }
 
-            // Remove rooms from disabled suppliers
             if (Array.isArray(responseData?.data) && inactiveSuppliers.size > 0) {
                 responseData.data = responseData.data
                     .map((hotel) => ({
@@ -239,7 +288,6 @@ export const handler = async (event) => {
                             const supplier = (room?.financialInfo?.supplier || "")
                                 .trim()
                                 .toLowerCase();
-
                             return !inactiveSuppliers.has(supplier);
                         }),
                     }))
@@ -286,7 +334,7 @@ export const handler = async (event) => {
         }
 
 
-        responseData['previousFilter'] = previousUsedFilters.Items?.map(item => unmarshall(item)) || [];
+        await finalizeSearchResponse(responseData, hotelSources);
 
         return {
             statusCode: 200,

@@ -3,6 +3,7 @@ import { computeTTLFromSupplier, getSessionId, globalHeaders, logTrace, Internal
 import { v4 as uuidv4 } from "uuid";
 import redis from "../lib/redisClient.js";
 import { createCacheKey } from "../lib/cacheKey.js";
+import { applyHotelMarkupsOnResponse, loadHotelModuleSources } from "../helper/applyHotelMarkups.js";
 import { verifyToken } from "./authorizerLayer.js";
 
 const BASE_URL = process.env.BASE_URL;
@@ -85,12 +86,14 @@ export const handler = async (event) => {
             const cached = await redis.get(cacheKey);
 
             if (cached) {
-                // Return cache hit
                 console.info("Cache HIT for", cacheKey);
+                const parsedCache = JSON.parse(cached);
+                const sources = await loadHotelModuleSources();
+                await applyHotelMarkupsOnResponse(parsedCache, { sources });
                 return {
                     statusCode: 200,
                     ...globalHeaders(),
-                    body: cached, // already stringified
+                    body: JSON.stringify(parsedCache),
                 };
             }
             console.info("Cache MISS for", cacheKey);
@@ -144,6 +147,9 @@ export const handler = async (event) => {
         };
 
         await logTrace(payload);
+
+        const sources = await loadHotelModuleSources();
+        await applyHotelMarkupsOnResponse(searchResp.data, { sources });
 
         return {
             statusCode: 200,

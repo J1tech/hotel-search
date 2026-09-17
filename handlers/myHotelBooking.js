@@ -1,4 +1,6 @@
 import { globalHeaders, InternalError } from "../helper/helper.js";
+import { stripSupplierHoldFields } from "../helper/applyHotelMarkups.js";
+import { foldPromoOntoHotelTotal, parseStoredPromo } from "../helper/hotelPromoBind.js";
 import { verifyToken } from "./authorizerLayer.js";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { DynamoDBClient, QueryCommand } from "@aws-sdk/client-dynamodb";
@@ -110,10 +112,16 @@ export const handler = async (event) => {
 
                 const hotelImages = parseHotelResponse?.data?.[0]?.images || [];
 
-                return parseStringifiedJSON({
+                const parsed = stripSupplierHoldFields(parseStringifiedJSON({
                     ...unmarshalled,
                     hotelImages
-                });
+                }));
+                const promo = parseStoredPromo(parsed?.promo);
+                if (promo) {
+                    parsed.promo = promo;
+                    if (parsed.hotel) foldPromoOntoHotelTotal(parsed.hotel, promo);
+                }
+                return parsed;
             })
         );
         // console.log(parsedItems);
