@@ -28,6 +28,12 @@ custom:
     - user_type
     - user_id
     - Authorization
+    methods:
+    - OPTIONS
+    - HEAD
+    - GET
+    - POST
+    - PATCH
     allowCredentials: true
 
   corsImage:
@@ -46,7 +52,7 @@ provider:
   runtime: nodejs20.x
   region: eu-west-1
   stage: ${opt:stage, 'dev'}
-  timeout: 60
+  timeout: 30
   memorySize: 512
 
   vpc:
@@ -169,6 +175,9 @@ provider:
     MARKUPS_API_BASE: https://462qjowltd.execute-api.eu-west-1.amazonaws.com/dev
     UNIFIED_SESSIONS_API_BASE: ${env:UNIFIED_SESSIONS_API_BASE, 'https://mz71d0iimb.execute-api.eu-west-1.amazonaws.com/dev'}
     UNIFIED_SESSIONS_WRITE_SECRET: ${env:UNIFIED_SESSIONS_WRITE_SECRET, '2c9347d5d14015b4476f4e47699c63c3d0814534e510d260f0df557eab6d4954'}
+    PAYMENT_API_BASE: ${env:PAYMENT_API_BASE, 'https://pn5zli79ci.execute-api.eu-west-1.amazonaws.com/dev'}
+    HOTEL_CHECKOUT_INTERNAL_SECRET: ${env:HOTEL_CHECKOUT_INTERNAL_SECRET, '8f3c1a9e6b24d07c5e1f4a8d2b6c0e79a1d4f6b8c2e5a709'}
+    HOTEL_CHECKOUT_TTL_SECONDS: "900"
 
 package:
   patterns:
@@ -193,6 +202,7 @@ package:
 functions:
   hotelSearch:
     handler: handlers/hotelSearch.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -227,6 +237,7 @@ functions:
 
   hotelDetail:
     handler: handlers/hotelDetail.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -237,6 +248,7 @@ functions:
 
   getMoreRooms:
     handler: handlers/getMoreRooms.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -247,6 +259,7 @@ functions:
 
   hotelPreBook:
     handler: handlers/hotelPreBook.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -257,6 +270,7 @@ functions:
 
   hotelBooking:
     handler: handlers/hotelBooking.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -267,6 +281,7 @@ functions:
 
   hotelRetrieve:
     handler: handlers/hotelRetrieve.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -277,6 +292,7 @@ functions:
 
   hotelCancellation:
     handler: handlers/hotelCancellation.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -287,6 +303,7 @@ functions:
 
   getHotelCancellationPolicy:
     handler: handlers/getHotelCancellationPolicy.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -297,6 +314,7 @@ functions:
 
   getHotelCancellationCharges:
     handler: handlers/getHotelCancellationCharges.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -325,9 +343,9 @@ functions:
         method: post
         cors: ${self:custom.cors}
 
-  checkHotelBookingStatus:
+  checkHotelBookingStatusHttp:
     handler: handlers/checkHotelBookingStatus.handler
-    timeout: 120
+    timeout: 30
     environment:
       HOTEL_STATUS_POLL_BATCH_SIZE: "10"
       HOTEL_STATUS_POLL_INTERVAL_MS: "300000"
@@ -340,6 +358,18 @@ functions:
         path: /checkHotelBookingStatus
         method: post
         cors: ${self:custom.cors}
+
+  checkHotelBookingStatus:
+    handler: handlers/checkHotelBookingStatus.handler
+    timeout: 120
+    environment:
+      HOTEL_STATUS_POLL_BATCH_SIZE: "10"
+      HOTEL_STATUS_POLL_INTERVAL_MS: "300000"
+      HOTEL_STATUS_POLL_LOCK_TTL_SEC: "900"
+      HOTEL_STATUS_POLL_MAX_AGE_MS: "172800000"
+      HOTEL_STATUS_POLL_MAX_DUE: "50"
+      HOTEL_STATUS_POLL_RECONCILE_INTERVAL_MS: "86400000"
+    events:
     - schedule:
         name: hotel-search-${self:provider.stage}-checkHotelBookingStatus-pending-poll
         description: Hotel pending booking status poll (${self:provider.stage})
@@ -359,6 +389,7 @@ functions:
 
   updateExpiredHotelBooking:
     handler: handlers/updateExpiredHotelBooking.handler
+    timeout: 120
     events:
     - sqs:
         arn: !GetAtt updateExpiredHotelBooking.Arn
@@ -366,6 +397,7 @@ functions:
 
   invokeHotelBookingEmail:
     handler: handlers/invokeHotelBookingEmail.handler
+    timeout: 120
     events:
     - sqs:
         arn: !GetAtt InvokeHotelBookingEmailQueue.Arn
@@ -382,8 +414,62 @@ functions:
         method: post
         cors: ${self:custom.cors}
 
+  createHotelCheckout:
+    handler: handlers/createHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout
+        method: post
+        cors: ${self:custom.cors}
+
+  getHotelCheckout:
+    handler: handlers/getHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}
+        method: get
+        cors: ${self:custom.cors}
+
+  patchHotelCheckout:
+    handler: handlers/patchHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}
+        method: patch
+        cors: ${self:custom.cors}
+
+  getHotelCheckoutPaymentStatus:
+    handler: handlers/getHotelCheckoutPaymentStatus.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}/payment-status
+        method: get
+        cors: ${self:custom.cors}
+
+  markHotelCheckoutCaptured:
+    handler: handlers/markHotelCheckoutCaptured.handler
+    timeout: 30
+    events:
+    - http:
+        path: /internal/hotelCheckout/captured
+        method: post
+        cors: ${self:custom.cors}
+
   getHotelReviews:
     handler: handlers/getHotelReviews.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -394,6 +480,7 @@ functions:
 
   getReviewsOverview:
     handler: handlers/getReviewsOverview.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
