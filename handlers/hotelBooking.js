@@ -18,6 +18,7 @@ import {
     requireCapturedNgeniusOrder,
     stampConfirmInProgress,
 } from "../lib/hotelCheckout.js";
+import { summarizeNgeniusPayment } from "../lib/ngeniusPaymentState.js";
 import { redeemMarkupsPromo } from "../helper/markupsPromoClient.js";
 import {
     attachBoundPromoToHotelHold,
@@ -155,6 +156,7 @@ export const handler = async (event) => {
         const unifiedSessionToken =
             rawBody?.sessionToken ?? rawBody?.unifiedSessionToken ?? null;
         let checkoutRecord = null;
+        let ngeniusOrder = null;
 
         const authVerification = await verifyToken(event);
         console.log(JSON.stringify(authVerification, null, 2));
@@ -457,7 +459,7 @@ export const handler = async (event) => {
                 };
             }
             try {
-                await requireCapturedNgeniusOrder({
+                ngeniusOrder = await requireCapturedNgeniusOrder({
                     orderReference: paymentReference || checkoutRecord.orderReference,
                     amount: checkoutRecord.amount,
                 });
@@ -605,6 +607,7 @@ export const handler = async (event) => {
             foldPromoOntoHotelTotal(bookingData.hotel, promo);
         }
 
+        const ngeniusPayment = ngeniusOrder ? summarizeNgeniusPayment(ngeniusOrder) : null;
         const hotelBookObj = {
             bookingReferenceId: bookingData.bookingReferenceId,
             hotelKey: hotelKey,
@@ -652,6 +655,26 @@ export const handler = async (event) => {
                 searchKey: dynamoString(searchKey),
                 bookingKey: dynamoString(bookingKey),
                 promo: dynamoString(stringifyPromo(promo)),
+                checkoutId: dynamoString(checkoutId),
+                checkoutSnapshot: dynamoString(
+                    checkoutRecord?.snapshot && Object.keys(checkoutRecord.snapshot).length
+                        ? JSON.stringify(checkoutRecord.snapshot)
+                        : "",
+                ),
+                ngeniusPayment: dynamoString(
+                    ngeniusPayment ? JSON.stringify(ngeniusPayment) : "",
+                ),
+                chargedAmount:
+                    checkoutRecord?.amount != null
+                        ? { N: String(checkoutRecord.amount) }
+                        : undefined,
+                chargedCurrency: dynamoString(checkoutRecord?.currency),
+                paymentStatus: dynamoString(ngeniusPayment?.mappedStatus || checkoutRecord?.paymentStatus),
+                paymentMode: dynamoString(
+                    ngeniusPayment?.action ||
+                        ngeniusPayment?.paymentMethod?.type ||
+                        paymentMode,
+                ),
             }).filter(([, attr]) => attr)
         );
 
