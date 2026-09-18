@@ -61,6 +61,19 @@ async function processRecord(record) {
       const ageMs = now - createdAt;
 
       if (ageMs >= EXPIRY_THRESHOLD_MS) {
+        const paymentStatus = String(booking.paymentStatus || "");
+        const confirmStatus = String(booking.confirmStatus || "");
+        if (
+          paymentStatus === "captured" ||
+          confirmStatus === "in_progress" ||
+          confirmStatus === "confirmed" ||
+          booking.bookingReferenceId
+        ) {
+          console.log(
+            `Booking ${booking.bookingKey} has captured payment or confirm in flight — skip expire`
+          );
+          return;
+        }
         console.log(
           `Booking ${booking.bookingReferenceId} is ${Math.round(ageMs / 60000)} min old — marking expired`
         );

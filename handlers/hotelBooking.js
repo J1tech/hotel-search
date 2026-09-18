@@ -12,6 +12,12 @@ import {
     supplierNetFromHold,
 } from "../helper/applyHotelMarkups.js";
 import { markUnifiedSessionPaid, getPreBookRow } from "../lib/hotelPaymentSession.js";
+import {
+    loadCheckoutById,
+    patchCheckoutSnapshot,
+    requireCapturedNgeniusOrder,
+    stampConfirmInProgress,
+} from "../lib/hotelCheckout.js";
 import { redeemMarkupsPromo } from "../helper/markupsPromoClient.js";
 import {
     attachBoundPromoToHotelHold,
@@ -148,6 +154,7 @@ export const handler = async (event) => {
         const rawBody = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
         const unifiedSessionToken =
             rawBody?.sessionToken ?? rawBody?.unifiedSessionToken ?? null;
+        let checkoutRecord = null;
 
         const authVerification = await verifyToken(event);
         console.log(JSON.stringify(authVerification, null, 2));
@@ -405,6 +412,87 @@ export const handler = async (event) => {
             };
         }
 
+        const checkoutId = String(rawBody?.checkoutId || "").trim();
+        const paymentReference = String(
+            rawBody?.paymentReference || rawBody?.orderReference || paymentRef || "",
+        ).trim();
+        if (checkoutId) {
+            checkoutRecord = await loadCheckoutById(checkoutId);
+            if (!checkoutRecord?.checkoutId) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 404,
+                    body: JSON.stringify({ message: "Checkout not found", code: "NOT_FOUND" }),
+                };
+            }
+            if (checkoutRecord.bookingKey && checkoutRecord.bookingKey !== bookingKey) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 409,
+                    body: JSON.stringify({
+                        message: "Checkout does not match this booking.",
+                        code: "PAYMENT_REFERENCE_MISMATCH",
+                    }),
+                };
+            }
+            if (checkoutRecord.orderReference && paymentReference && checkoutRecord.orderReference !== paymentReference) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 409,
+                    body: JSON.stringify({
+                        message: "Payment reference does not match this checkout.",
+                        code: "PAYMENT_REFERENCE_MISMATCH",
+                    }),
+                };
+            }
+            if (checkoutRecord.bookingReference) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 409,
+                    body: JSON.stringify({
+                        message: "Booking already confirmed",
+                        code: "ALREADY_BOOKED",
+                        bookingReferenceId: checkoutRecord.bookingReference,
+                    }),
+                };
+            }
+            try {
+                await requireCapturedNgeniusOrder({
+                    orderReference: paymentReference || checkoutRecord.orderReference,
+                    amount: checkoutRecord.amount,
+                });
+            } catch (err) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: err.statusCode || 402,
+                    body: JSON.stringify({
+                        message: err.message,
+                        code: err.code,
+                        paymentStatus: err.paymentStatus,
+                    }),
+                };
+            }
+            try {
+                await stampConfirmInProgress(checkoutId);
+            } catch (err) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: err.statusCode || 409,
+                    body: JSON.stringify({ message: err.message, code: err.code }),
+                };
+            }
+        } else if (String(process.env.HOTEL_HPP_REQUIRED || "").toLowerCase() === "true") {
+            return {
+                ...globalHeaders(),
+                statusCode: 402,
+                body: JSON.stringify({
+                    message: "Payment has not been completed.",
+                    code: "PAYMENT_NOT_CAPTURED",
+                    paymentStatus: "none",
+                }),
+            };
+        }
+
         // Session ID
         const { sessionId, conversationId } = await getSessionId(authVerification?.context?.sub);
         console.log("sessionId******", sessionId);
@@ -610,6 +698,17 @@ export const handler = async (event) => {
         });
         await dynamo.send(updateCmd);
 
+        if (checkoutRecord?.bookingKey) {
+            try {
+                await patchCheckoutSnapshot(checkoutRecord.bookingKey, {
+                    confirmStatus: "confirmed",
+                    paymentStatus: "captured",
+                });
+            } catch (stampErr) {
+                console.warn("Failed to stamp hotel checkout confirmed:", stampErr?.message || stampErr);
+            }
+        }
+
         if (unifiedSessionToken) {
             try {
                 await markUnifiedSessionPaid(unifiedSessionToken);
@@ -728,6 +827,26 @@ export const handler = async (event) => {
         };
     } catch (error) {
         console.error("Error in hotel booking:", error.response?.data || error.message, error.stack);
+        try {
+            if (typeof checkoutRecord !== "undefined" && checkoutRecord?.bookingKey) {
+                await patchCheckoutSnapshot(checkoutRecord.bookingKey, {
+                    confirmStatus: "confirm_failed",
+                });
+            }
+        } catch (stampErr) {
+            console.warn("Failed to stamp hotel checkout confirm_failed:", stampErr?.message || stampErr);
+        }
+        if (error?.code && error?.statusCode) {
+            return {
+                ...globalHeaders(),
+                statusCode: error.statusCode,
+                body: JSON.stringify({
+                    message: error.message,
+                    code: error.code,
+                    paymentStatus: error.paymentStatus,
+                }),
+            };
+        }
         return await InternalError(error);
     }
 };
