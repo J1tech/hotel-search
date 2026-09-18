@@ -12,6 +12,13 @@ import {
     supplierNetFromHold,
 } from "../helper/applyHotelMarkups.js";
 import { markUnifiedSessionPaid, getPreBookRow } from "../lib/hotelPaymentSession.js";
+import {
+    loadCheckoutById,
+    patchCheckoutSnapshot,
+    requireCapturedNgeniusOrder,
+    stampConfirmInProgress,
+} from "../lib/hotelCheckout.js";
+import { summarizeNgeniusPayment } from "../lib/ngeniusPaymentState.js";
 import { redeemMarkupsPromo } from "../helper/markupsPromoClient.js";
 import {
     attachBoundPromoToHotelHold,
@@ -148,6 +155,8 @@ export const handler = async (event) => {
         const rawBody = typeof event.body === "string" ? JSON.parse(event.body) : event.body;
         const unifiedSessionToken =
             rawBody?.sessionToken ?? rawBody?.unifiedSessionToken ?? null;
+        let checkoutRecord = null;
+        let ngeniusOrder = null;
 
         const authVerification = await verifyToken(event);
         console.log(JSON.stringify(authVerification, null, 2));
@@ -405,6 +414,87 @@ export const handler = async (event) => {
             };
         }
 
+        const checkoutId = String(rawBody?.checkoutId || "").trim();
+        const paymentReference = String(
+            rawBody?.paymentReference || rawBody?.orderReference || paymentRef || "",
+        ).trim();
+        if (checkoutId) {
+            checkoutRecord = await loadCheckoutById(checkoutId);
+            if (!checkoutRecord?.checkoutId) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 404,
+                    body: JSON.stringify({ message: "Checkout not found", code: "NOT_FOUND" }),
+                };
+            }
+            if (checkoutRecord.bookingKey && checkoutRecord.bookingKey !== bookingKey) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 409,
+                    body: JSON.stringify({
+                        message: "Checkout does not match this booking.",
+                        code: "PAYMENT_REFERENCE_MISMATCH",
+                    }),
+                };
+            }
+            if (checkoutRecord.orderReference && paymentReference && checkoutRecord.orderReference !== paymentReference) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 409,
+                    body: JSON.stringify({
+                        message: "Payment reference does not match this checkout.",
+                        code: "PAYMENT_REFERENCE_MISMATCH",
+                    }),
+                };
+            }
+            if (checkoutRecord.bookingReference) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: 409,
+                    body: JSON.stringify({
+                        message: "Booking already confirmed",
+                        code: "ALREADY_BOOKED",
+                        bookingReferenceId: checkoutRecord.bookingReference,
+                    }),
+                };
+            }
+            try {
+                ngeniusOrder = await requireCapturedNgeniusOrder({
+                    orderReference: paymentReference || checkoutRecord.orderReference,
+                    amount: checkoutRecord.amount,
+                });
+            } catch (err) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: err.statusCode || 402,
+                    body: JSON.stringify({
+                        message: err.message,
+                        code: err.code,
+                        paymentStatus: err.paymentStatus,
+                    }),
+                };
+            }
+            try {
+                await stampConfirmInProgress(checkoutId);
+            } catch (err) {
+                return {
+                    ...globalHeaders(),
+                    statusCode: err.statusCode || 409,
+                    body: JSON.stringify({ message: err.message, code: err.code }),
+                };
+            }
+        } else if (String(process.env.HOTEL_HPP_REQUIRED || "").toLowerCase() === "true") {
+            return {
+                ...globalHeaders(),
+                statusCode: 402,
+                body: JSON.stringify({
+                    message: "Payment has not been completed.",
+                    code: "PAYMENT_NOT_CAPTURED",
+                    paymentStatus: "none",
+                }),
+            };
+        }
+
         // Session ID
         const { sessionId, conversationId } = await getSessionId(authVerification?.context?.sub);
         console.log("sessionId******", sessionId);
@@ -517,6 +607,7 @@ export const handler = async (event) => {
             foldPromoOntoHotelTotal(bookingData.hotel, promo);
         }
 
+        const ngeniusPayment = ngeniusOrder ? summarizeNgeniusPayment(ngeniusOrder) : null;
         const hotelBookObj = {
             bookingReferenceId: bookingData.bookingReferenceId,
             hotelKey: hotelKey,
@@ -564,6 +655,26 @@ export const handler = async (event) => {
                 searchKey: dynamoString(searchKey),
                 bookingKey: dynamoString(bookingKey),
                 promo: dynamoString(stringifyPromo(promo)),
+                checkoutId: dynamoString(checkoutId),
+                checkoutSnapshot: dynamoString(
+                    checkoutRecord?.snapshot && Object.keys(checkoutRecord.snapshot).length
+                        ? JSON.stringify(checkoutRecord.snapshot)
+                        : "",
+                ),
+                ngeniusPayment: dynamoString(
+                    ngeniusPayment ? JSON.stringify(ngeniusPayment) : "",
+                ),
+                chargedAmount:
+                    checkoutRecord?.amount != null
+                        ? { N: String(checkoutRecord.amount) }
+                        : undefined,
+                chargedCurrency: dynamoString(checkoutRecord?.currency),
+                paymentStatus: dynamoString(ngeniusPayment?.mappedStatus || checkoutRecord?.paymentStatus),
+                paymentMode: dynamoString(
+                    ngeniusPayment?.action ||
+                        ngeniusPayment?.paymentMethod?.type ||
+                        paymentMode,
+                ),
             }).filter(([, attr]) => attr)
         );
 
@@ -609,6 +720,17 @@ export const handler = async (event) => {
                 }
         });
         await dynamo.send(updateCmd);
+
+        if (checkoutRecord?.bookingKey) {
+            try {
+                await patchCheckoutSnapshot(checkoutRecord.bookingKey, {
+                    confirmStatus: "confirmed",
+                    paymentStatus: "captured",
+                });
+            } catch (stampErr) {
+                console.warn("Failed to stamp hotel checkout confirmed:", stampErr?.message || stampErr);
+            }
+        }
 
         if (unifiedSessionToken) {
             try {
@@ -728,6 +850,26 @@ export const handler = async (event) => {
         };
     } catch (error) {
         console.error("Error in hotel booking:", error.response?.data || error.message, error.stack);
+        try {
+            if (typeof checkoutRecord !== "undefined" && checkoutRecord?.bookingKey) {
+                await patchCheckoutSnapshot(checkoutRecord.bookingKey, {
+                    confirmStatus: "confirm_failed",
+                });
+            }
+        } catch (stampErr) {
+            console.warn("Failed to stamp hotel checkout confirm_failed:", stampErr?.message || stampErr);
+        }
+        if (error?.code && error?.statusCode) {
+            return {
+                ...globalHeaders(),
+                statusCode: error.statusCode,
+                body: JSON.stringify({
+                    message: error.message,
+                    code: error.code,
+                    paymentStatus: error.paymentStatus,
+                }),
+            };
+        }
         return await InternalError(error);
     }
 };

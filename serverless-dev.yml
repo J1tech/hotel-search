@@ -28,6 +28,12 @@ custom:
     - user_type
     - user_id
     - Authorization
+    methods:
+    - OPTIONS
+    - HEAD
+    - GET
+    - POST
+    - PATCH
     allowCredentials: true
 
   corsImage:
@@ -169,6 +175,9 @@ provider:
     MARKUPS_API_BASE: https://462qjowltd.execute-api.eu-west-1.amazonaws.com/dev
     UNIFIED_SESSIONS_API_BASE: ${env:UNIFIED_SESSIONS_API_BASE, 'https://mz71d0iimb.execute-api.eu-west-1.amazonaws.com/dev'}
     UNIFIED_SESSIONS_WRITE_SECRET: ${env:UNIFIED_SESSIONS_WRITE_SECRET, '2c9347d5d14015b4476f4e47699c63c3d0814534e510d260f0df557eab6d4954'}
+    PAYMENT_API_BASE: ${env:PAYMENT_API_BASE, 'https://pn5zli79ci.execute-api.eu-west-1.amazonaws.com/dev'}
+    HOTEL_CHECKOUT_INTERNAL_SECRET: ${env:HOTEL_CHECKOUT_INTERNAL_SECRET, '8f3c1a9e6b24d07c5e1f4a8d2b6c0e79a1d4f6b8c2e5a709'}
+    HOTEL_CHECKOUT_TTL_SECONDS: "900"
 
 package:
   patterns:
@@ -379,6 +388,59 @@ functions:
     events:
     - http:
         path: /hotelUnifiedPaymentSession
+        method: post
+        cors: ${self:custom.cors}
+
+  createHotelCheckout:
+    handler: handlers/createHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout
+        method: post
+        cors: ${self:custom.cors}
+
+  getHotelCheckout:
+    handler: handlers/getHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}
+        method: get
+        cors: ${self:custom.cors}
+
+  patchHotelCheckout:
+    handler: handlers/patchHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}
+        method: patch
+        cors: ${self:custom.cors}
+
+  getHotelCheckoutPaymentStatus:
+    handler: handlers/getHotelCheckoutPaymentStatus.handler
+    timeout: 20
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}/payment-status
+        method: get
+        cors: ${self:custom.cors}
+
+  markHotelCheckoutCaptured:
+    handler: handlers/markHotelCheckoutCaptured.handler
+    timeout: 20
+    events:
+    - http:
+        path: /internal/hotelCheckout/captured
         method: post
         cors: ${self:custom.cors}
 
