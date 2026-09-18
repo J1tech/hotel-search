@@ -28,6 +28,12 @@ custom:
     - user_type
     - user_id
     - Authorization
+    methods:
+    - OPTIONS
+    - HEAD
+    - GET
+    - POST
+    - PATCH
     allowCredentials: true
 
   corsImage:
