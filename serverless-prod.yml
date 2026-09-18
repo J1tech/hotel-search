@@ -13,6 +13,10 @@ custom:
     COGNITO_USERPOOL_ID: /provesio/cognitouserpoolid~true
     GIATA_USERNAME: /al-rais/prod/giata/username
     GIATA_PASSWORD: /al-rais/prod/giata/password~true
+    INTERNAL_SUPPLIER_ROUTING_KEY: /al-rais/prod/internal-supplier-routing-key~true
+    GOOGLE_PLACES_API_KEY: /al-rais/prod/google/places-api-key~true
+    UNIFIED_SESSIONS_WRITE_SECRET: /al-rais/prod/unified-sessions/write-secret~true
+    HOTEL_CHECKOUT_INTERNAL_SECRET: /al-rais/prod/hpp/checkout-internal-secret~true
 
   prune:
     automatic: true
@@ -152,12 +156,12 @@ provider:
     INVOKE_EMAIL_QUEUE: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/invoke-hotel-booking-email-${self:provider.stage}
     SEND_EMAIL_QUEUE: https://sqs.${aws:region}.amazonaws.com/${aws:accountId}/send-email-notification-${self:provider.stage}
     INTERNAL_BASE_URL: https://28jj8886ja.execute-api.eu-west-1.amazonaws.com
-    INTERNAL_SUPPLIER_ROUTING_KEY: dev-internal-supplier-routing-key
+    INTERNAL_SUPPLIER_ROUTING_KEY: ${self:custom.serverlessSsmFetch.INTERNAL_SUPPLIER_ROUTING_KEY}
     GEO_GEOCODE_CACHE_TTL: "604800"
     GEO_PLACES_AUTOCOMPLETE_CACHE_TTL: "259200"
     GEO_PLACES_DETAILS_CACHE_TTL: "604800"
     GEO_SEARCH_DEFAULT_RADIUS_KM: "5"
-    GOOGLE_PLACES_API_KEY: AIzaSyBamLDqEqziMx5W3JyXLboBwidnqQDLXJg
+    GOOGLE_PLACES_API_KEY: ${self:custom.serverlessSsmFetch.GOOGLE_PLACES_API_KEY}
     GOOGLE_REVIEWS_CACHE_TTL: "21600"
     GIATA_ENRICHMENT_ENABLED: "true"
     GIATA_ENRICH_FUNCTION_ARN: arn:aws:lambda:${aws:region}:${aws:accountId}:function:al-rais-giata-svc-${self:provider.stage}-enrich
@@ -166,7 +170,10 @@ provider:
     MARKUPS_TABLE: markups-${self:provider.stage}
     MARKUPS_API_BASE: https://pssvhprlpl.execute-api.eu-west-1.amazonaws.com/prod
     UNIFIED_SESSIONS_API_BASE: https://1wo8ihkto6.execute-api.eu-west-1.amazonaws.com/prod
-    UNIFIED_SESSIONS_WRITE_SECRET: 2c9347d5d14015b4476f4e47699c63c3d0814534e510d260f0df557eab6d4954
+    UNIFIED_SESSIONS_WRITE_SECRET: ${self:custom.serverlessSsmFetch.UNIFIED_SESSIONS_WRITE_SECRET}
+    PAYMENT_API_BASE: https://t8dmv7z6q3.execute-api.eu-west-1.amazonaws.com/prod
+    HOTEL_CHECKOUT_INTERNAL_SECRET: ${self:custom.serverlessSsmFetch.HOTEL_CHECKOUT_INTERNAL_SECRET}
+    HOTEL_CHECKOUT_TTL_SECONDS: "900"
 
 package:
   patterns:
@@ -397,6 +404,59 @@ functions:
     events:
     - http:
         path: /hotelUnifiedPaymentSession
+        method: post
+        cors: ${self:custom.cors}
+
+  createHotelCheckout:
+    handler: handlers/createHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout
+        method: post
+        cors: ${self:custom.cors}
+
+  getHotelCheckout:
+    handler: handlers/getHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}
+        method: get
+        cors: ${self:custom.cors}
+
+  patchHotelCheckout:
+    handler: handlers/patchHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}
+        method: patch
+        cors: ${self:custom.cors}
+
+  getHotelCheckoutPaymentStatus:
+    handler: handlers/getHotelCheckoutPaymentStatus.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}/payment-status
+        method: get
+        cors: ${self:custom.cors}
+
+  markHotelCheckoutCaptured:
+    handler: handlers/markHotelCheckoutCaptured.handler
+    timeout: 30
+    events:
+    - http:
+        path: /internal/hotelCheckout/captured
         method: post
         cors: ${self:custom.cors}
 
