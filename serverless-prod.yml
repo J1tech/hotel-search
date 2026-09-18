@@ -259,7 +259,7 @@ functions:
 
   hotelBooking:
     handler: handlers/hotelBooking.handler
-    timeout: 30
+    timeout: 90
     layers:
     - ${self:custom.authorizerLayer}
     events:

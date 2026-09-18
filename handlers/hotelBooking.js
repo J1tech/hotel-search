@@ -27,6 +27,11 @@ import {
     foldPromoOntoHotelTotal,
     stringifyPromo,
 } from "../helper/hotelPromoBind.js";
+import {
+    isHotelFetchLater,
+    isTransientHotelBookError,
+    pollHotelBookFetchLater,
+} from "../helper/hotelAsyncFetch.js";
 
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
 
@@ -101,54 +106,15 @@ const buildProvesioHotelBookPayload = (body, { supplierNet, clientReference }) =
 
 const BASE_URL = process.env.BASE_URL;
 const CACHE_TTL_DEFAULT = Number(process.env.CACHE_TTL_DEFAULT || 60); // seconds
-const ASYNC_POLL_INTERVAL_MS = Number(process.env.ASYNC_POLL_INTERVAL_MS || 3000); // 3s between retries
-const ASYNC_POLL_MAX_ATTEMPTS = Number(process.env.ASYNC_POLL_MAX_ATTEMPTS || 10); // up to 30s total
+const PROVESIO_BOOK_TIMEOUT_MS = 75000;
 
-const pollAsyncResult = async (fetchUrl, sessionId, conversationId) => {
-    const fullUrl = `${BASE_URL}${fetchUrl}`;
+const confirmInProgressBody = (extra = {}) => ({
+    message: "Booking confirmation already in progress",
+    code: "CONFIRM_IN_PROGRESS",
+    ...extra,
+});
 
-    for (let attempt = 1; attempt <= ASYNC_POLL_MAX_ATTEMPTS; attempt++) {
-        console.log(`Polling attempt ${attempt}/${ASYNC_POLL_MAX_ATTEMPTS}: ${fullUrl}`);
-
-        // Wait before each poll (including the first — supplier said "fetch later")
-        await new Promise((resolve) => setTimeout(resolve, ASYNC_POLL_INTERVAL_MS));
-
-        const pollResp = await axios.get(fullUrl, {
-            timeout: 15000,
-            headers: {
-                "Content-Type": "application/json",
-                "X-API-KEY": process.env.X_API_KEY,
-                conversationId,
-                sessionId,
-            },
-        });
-
-        const statusCode = pollResp.data?.meta?.statusCode;
-
-        if (statusCode === 2) {
-            // Still not ready — "FETCH LATER" again
-            console.log(`Attempt ${attempt}: still pending (statusCode 2), will retry...`);
-            continue;
-        }
-
-        if (pollResp.data?.meta?.success === true) {
-            // Got a real result
-            console.log(`Attempt ${attempt}: received final result.`);
-            return pollResp.data;
-        }
-
-        // Unexpected status from supplier
-        throw new Error(
-            `Unexpected poll response on attempt ${attempt}: ${JSON.stringify(pollResp.data?.meta)}`
-        );
-    }
-
-    throw new Error(
-        `Async poll exhausted after ${ASYNC_POLL_MAX_ATTEMPTS} attempts (${(ASYNC_POLL_MAX_ATTEMPTS * ASYNC_POLL_INTERVAL_MS) / 1000}s). Supplier result not ready.`
-    );
-};
-
-export const handler = async (event) => {
+export const handler = async (event, context) => {
     try {
         console.log("BASE_URL********************", BASE_URL);
 
@@ -527,12 +493,19 @@ export const handler = async (event) => {
 
         console.log("searchPayload**********", searchPayload);
 
+        const remainingMs = Number(context?.getRemainingTimeInMillis?.() || 90000);
+        const bookDeadline = Date.now() + Math.max(20000, remainingMs - 8000);
+        const provesioTimeout = Math.min(
+            PROVESIO_BOOK_TIMEOUT_MS,
+            Math.max(15000, bookDeadline - Date.now() - 5000),
+        );
+
         // ---- CALL PROVESIO ----
         const searchResp = await axios.post(
             `${BASE_URL}/reservation/hotel-book`,
             searchPayload,
             {
-                timeout: 45000,
+                timeout: provesioTimeout,
                 headers: {
                     "Content-Type": "application/json",
                     "X-API-KEY": process.env.X_API_KEY,
@@ -546,21 +519,27 @@ export const handler = async (event) => {
 
         let responseData = searchResp?.data;
 
-        // --- Handle async "FETCH LATER" response ---
-        if (
-            responseData?.meta?.statusCode === 2 &&
-            responseData?.asyncFetch?.fetchUrl
-        ) {
+        // FETCH LATER: follow fetchUrl in this Lambda (it keeps running after API GW 504).
+        // Do not throw if time runs out — keep confirmStatus=in_progress so FE GET-polls.
+        if (isHotelFetchLater(responseData)) {
             console.log(
-                "Received async response, starting poll for:",
+                "Received async hotel-book response, polling:",
                 responseData.asyncFetch.fetchUrl
             );
-
-            responseData = await pollAsyncResult(
-                responseData.asyncFetch.fetchUrl,
+            const polled = await pollHotelBookFetchLater({
+                fetchUrl: responseData.asyncFetch.fetchUrl,
                 sessionId,
-                conversationId
-            );
+                conversationId,
+                deadlineMs: bookDeadline,
+            });
+            if (!polled) {
+                return {
+                    statusCode: 202,
+                    ...globalHeaders(),
+                    body: JSON.stringify(confirmInProgressBody({ fetchUrl: responseData.asyncFetch.fetchUrl })),
+                };
+            }
+            responseData = polled;
         }
 
         await applyHotelMarkupsOnResponse(responseData);
@@ -850,10 +829,19 @@ export const handler = async (event) => {
         };
     } catch (error) {
         console.error("Error in hotel booking:", error.response?.data || error.message, error.stack);
+        const transient = isTransientHotelBookError(error);
+        if (transient) {
+            return {
+                statusCode: 202,
+                ...globalHeaders(),
+                body: JSON.stringify(confirmInProgressBody()),
+            };
+        }
         try {
             if (typeof checkoutRecord !== "undefined" && checkoutRecord?.bookingKey) {
                 await patchCheckoutSnapshot(checkoutRecord.bookingKey, {
                     confirmStatus: "confirm_failed",
+                    confirmStartedAt: "",
                 });
             }
         } catch (stampErr) {
