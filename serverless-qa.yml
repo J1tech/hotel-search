@@ -46,7 +46,8 @@ provider:
   runtime: nodejs20.x
   region: eu-west-1
   stage: ${opt:stage, 'qa'}
-  timeout: 60
+  # REST API Gateway hard-caps HTTP integrations at 30s. SQS workers override to 120.
+  timeout: 30
   memorySize: 512
 
   vpc:
@@ -191,6 +192,7 @@ package:
 functions:
   hotelSearch:
     handler: handlers/hotelSearch.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -225,6 +227,7 @@ functions:
 
   hotelDetail:
     handler: handlers/hotelDetail.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -235,6 +238,7 @@ functions:
 
   getMoreRooms:
     handler: handlers/getMoreRooms.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -245,6 +249,7 @@ functions:
 
   hotelPreBook:
     handler: handlers/hotelPreBook.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -255,6 +260,7 @@ functions:
 
   hotelBooking:
     handler: handlers/hotelBooking.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -265,6 +271,7 @@ functions:
 
   hotelRetrieve:
     handler: handlers/hotelRetrieve.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -275,6 +282,7 @@ functions:
 
   hotelCancellation:
     handler: handlers/hotelCancellation.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -285,6 +293,7 @@ functions:
 
   getHotelCancellationPolicy:
     handler: handlers/getHotelCancellationPolicy.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -295,6 +304,7 @@ functions:
 
   getHotelCancellationCharges:
     handler: handlers/getHotelCancellationCharges.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -323,9 +333,10 @@ functions:
         method: post
         cors: ${self:custom.cors}
 
-  checkHotelBookingStatus:
+  # HTTP only — 30s to match API Gateway. Poll is a separate function so this warning goes away.
+  checkHotelBookingStatusHttp:
     handler: handlers/checkHotelBookingStatus.handler
-    timeout: 120
+    timeout: 30
     environment:
       HOTEL_STATUS_POLL_BATCH_SIZE: "10"
       HOTEL_STATUS_POLL_INTERVAL_MS: "300000"
@@ -338,6 +349,19 @@ functions:
         path: /checkHotelBookingStatus
         method: post
         cors: ${self:custom.cors}
+
+  # EventBridge poll — keep this function name so the existing schedule stays attached. No API Gateway.
+  checkHotelBookingStatus:
+    handler: handlers/checkHotelBookingStatus.handler
+    timeout: 120
+    environment:
+      HOTEL_STATUS_POLL_BATCH_SIZE: "10"
+      HOTEL_STATUS_POLL_INTERVAL_MS: "300000"
+      HOTEL_STATUS_POLL_LOCK_TTL_SEC: "900"
+      HOTEL_STATUS_POLL_MAX_AGE_MS: "172800000"
+      HOTEL_STATUS_POLL_MAX_DUE: "50"
+      HOTEL_STATUS_POLL_RECONCILE_INTERVAL_MS: "86400000"
+    events:
     - schedule:
         rate: rate(1 minute)
         enabled: true
@@ -362,6 +386,7 @@ functions:
 
   getHotelReviews:
     handler: handlers/getHotelReviews.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
@@ -372,6 +397,7 @@ functions:
 
   getReviewsOverview:
     handler: handlers/getReviewsOverview.handler
+    timeout: 30
     layers:
     - ${self:custom.authorizerLayer}
     events:
