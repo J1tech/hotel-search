@@ -167,6 +167,9 @@ provider:
     MARKUPS_API_BASE: https://pssvhprlpl.execute-api.eu-west-1.amazonaws.com/prod
     UNIFIED_SESSIONS_API_BASE: https://1wo8ihkto6.execute-api.eu-west-1.amazonaws.com/prod
     UNIFIED_SESSIONS_WRITE_SECRET: 2c9347d5d14015b4476f4e47699c63c3d0814534e510d260f0df557eab6d4954
+    PAYMENT_API_BASE: https://t8dmv7z6q3.execute-api.eu-west-1.amazonaws.com/prod
+    HOTEL_CHECKOUT_INTERNAL_SECRET: 909442a6bcdf01d1341ea996d8230975
+    HOTEL_CHECKOUT_TTL_SECONDS: "900"
 
 package:
   patterns:
@@ -397,6 +400,59 @@ functions:
     events:
     - http:
         path: /hotelUnifiedPaymentSession
+        method: post
+        cors: ${self:custom.cors}
+
+  createHotelCheckout:
+    handler: handlers/createHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout
+        method: post
+        cors: ${self:custom.cors}
+
+  getHotelCheckout:
+    handler: handlers/getHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}
+        method: get
+        cors: ${self:custom.cors}
+
+  patchHotelCheckout:
+    handler: handlers/patchHotelCheckout.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}
+        method: patch
+        cors: ${self:custom.cors}
+
+  getHotelCheckoutPaymentStatus:
+    handler: handlers/getHotelCheckoutPaymentStatus.handler
+    timeout: 30
+    layers:
+    - ${self:custom.authorizerLayer}
+    events:
+    - http:
+        path: /hotelCheckout/{checkoutId}/payment-status
+        method: get
+        cors: ${self:custom.cors}
+
+  markHotelCheckoutCaptured:
+    handler: handlers/markHotelCheckoutCaptured.handler
+    timeout: 30
+    events:
+    - http:
+        path: /internal/hotelCheckout/captured
         method: post
         cors: ${self:custom.cors}
 
