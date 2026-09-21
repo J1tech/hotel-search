@@ -27,6 +27,7 @@ import {
   reschedulePendingHotelPoll,
   updatePendingPollPayload,
 } from "./hotelPendingPoll.js";
+import { sendHotelOpsAlert } from "../lib/opsBookingAlert.js";
 
 const BASE_URL = process.env.BASE_URL;
 
@@ -255,13 +256,14 @@ export const processPendingHotelPollItem = async ({
 
   if (isMaxAgeExceeded(payload)) {
     await removePendingHotelPoll(payload.bookingReferenceId, payload.hotelKey);
+    let storedForAlert = null;
     try {
-      const stored = await loadStoredBooking(
+      storedForAlert = await loadStoredBooking(
         dynamo,
         payload.bookingReferenceId,
         payload.hotelKey
       );
-      if (stored && isHotelPendingPollStatus(stored.bookingStatus)) {
+      if (storedForAlert && isHotelPendingPollStatus(storedForAlert.bookingStatus)) {
         await dynamo.send(
           new UpdateItemCommand({
             TableName: process.env.HOTEL_BOOK_TABLE,
@@ -281,6 +283,23 @@ export const processPendingHotelPollItem = async ({
       }
     } catch (err) {
       console.warn("Max-age DB flag failed:", payload.bookingReferenceId, err?.message);
+    }
+    try {
+      await sendHotelOpsAlert({
+        scenario: "booking_pending",
+        bookingRecord: storedForAlert || {
+          bookingReferenceId: payload.bookingReferenceId,
+          hotelKey: payload.hotelKey,
+          bookingKey: payload.bookingKey,
+          searchKey: payload.searchKey,
+          bookingStatus: payload.lastKnownStatus,
+        },
+        supplierStatus: payload.lastKnownStatus,
+        reason: "pending_poll_max_age",
+        extra: { userId: payload.userId, userType: payload.userType },
+      });
+    } catch (err) {
+      console.warn("hotel ops alert (max age) failed:", err?.message || err);
     }
     result.outcome = "max_age_stopped";
     return result;
@@ -363,6 +382,17 @@ export const processPendingHotelPollItem = async ({
       if (err?.name !== "ConditionalCheckFailedException") throw err;
     }
     await removePendingHotelPoll(payload.bookingReferenceId, payload.hotelKey);
+    try {
+      await sendHotelOpsAlert({
+        scenario: "supplier_failed",
+        bookingRecord: stored,
+        supplierStatus,
+        reason: "supplier_terminal_status",
+        extra: { userId: payload.userId, userType: payload.userType },
+      });
+    } catch (err) {
+      console.warn("hotel ops alert (terminal) failed:", err?.message || err);
+    }
     result.outcome = "terminal";
     return result;
   }
