@@ -32,8 +32,18 @@ import {
     isTransientHotelBookError,
     pollHotelBookFetchLater,
 } from "../helper/hotelAsyncFetch.js";
+import { isHotelTerminalStopStatus } from "../helper/hotelPendingPoll.js";
+import { sendHotelOpsAlert } from "../lib/opsBookingAlert.js";
 
 const dynamo = new DynamoDBClient({ region: process.env.REGION });
+
+async function emitHotelOpsAlert(params, label) {
+    try {
+        await sendHotelOpsAlert(params);
+    } catch (err) {
+        console.warn(`hotel ops alert (${label}) failed:`, err?.message || err);
+    }
+}
 
 /** Internal FE/BFF fields — never forward to Provesio hotel-book. */
 const PROVESIO_BOOK_OMIT = new Set([
@@ -62,12 +72,40 @@ const sanitizeIdentityDocuments = (docs) => {
     return cleaned.length ? cleaned : undefined;
 };
 
+const sanitizePassengerContact = (contact, { isLead = false } = {}) => {
+    if (!contact || !Array.isArray(contact.contactsProvided)) return isLead ? contact : undefined;
+    const cleanedProvided = contact.contactsProvided
+        .map((entry) => {
+            if (!entry || typeof entry !== "object") return null;
+            const phones = (Array.isArray(entry.phone) ? entry.phone : [])
+                .filter((p) => p && !isBlank(p.areaCode) && !isBlank(p.phoneNumber))
+                .map((p) => ({
+                    ...p,
+                    label: isBlank(p.label) ? "Origin" : p.label,
+                }));
+            const emails = (Array.isArray(entry.emailAddress) ? entry.emailAddress : []).filter(
+                (e) => !isBlank(e),
+            );
+            if (!phones.length && !emails.length) return null;
+            const next = {};
+            if (emails.length) next.emailAddress = emails;
+            if (phones.length) next.phone = phones;
+            return next;
+        })
+        .filter(Boolean);
+    if (!cleanedProvided.length) return isLead ? contact : undefined;
+    return { contactsProvided: cleanedProvided };
+};
+
 const sanitizeHotelBookPassenger = (passenger) => {
     if (!passenger || typeof passenger !== "object") return passenger;
     const next = { ...passenger };
     const docs = sanitizeIdentityDocuments(passenger.identityDocuments);
     if (docs) next.identityDocuments = docs;
     else delete next.identityDocuments;
+    const contact = sanitizePassengerContact(passenger.contact, { isLead: passenger.isLead === true });
+    if (contact) next.contact = contact;
+    else delete next.contact;
     return next;
 };
 
@@ -325,37 +363,53 @@ export const handler = async (event, context) => {
                 //     }
                 // }
 
-                // contact validation
+                // Lead guest must have email + phone; additional guests may omit contact.
                 const contact = passenger.contact;
-                if (!contact || !Array.isArray(contact.contactsProvided) || contact.contactsProvided.length === 0) {
-                    return {
-                        ...globalHeaders(),
-                        statusCode: 400,
-                        body: JSON.stringify({ message: `contact information is required for passenger ${passenger.passengerKey}` }),
-                    };
-                }
-                for (const c of contact.contactsProvided) {
-                    if (!Array.isArray(c.emailAddress) || c.emailAddress.length === 0) {
+                const isLead = passenger.isLead === true;
+                if (isLead) {
+                    if (!contact || !Array.isArray(contact.contactsProvided) || contact.contactsProvided.length === 0) {
                         return {
                             ...globalHeaders(),
                             statusCode: 400,
-                            body: JSON.stringify({ message: `emailAddress is required for passenger ${passenger.passengerKey}` }),
+                            body: JSON.stringify({ message: `contact information is required for passenger ${passenger.passengerKey}` }),
                         };
                     }
-                    if (!Array.isArray(c.phone) || c.phone.length === 0) {
-                        return {
-                            ...globalHeaders(),
-                            statusCode: 400,
-                            body: JSON.stringify({ message: `phone is required for passenger ${passenger.passengerKey}` }),
-                        };
-                    }
-                    for (const p of c.phone) {
-                        if (!p.label || !p.areaCode || !p.phoneNumber) {
+                    for (const c of contact.contactsProvided) {
+                        if (!Array.isArray(c.emailAddress) || c.emailAddress.length === 0 || isBlank(c.emailAddress[0])) {
                             return {
                                 ...globalHeaders(),
                                 statusCode: 400,
-                                body: JSON.stringify({ message: `phone fields are incomplete for passenger ${passenger.passengerKey}` }),
+                                body: JSON.stringify({ message: `emailAddress is required for passenger ${passenger.passengerKey}` }),
                             };
+                        }
+                        if (!Array.isArray(c.phone) || c.phone.length === 0) {
+                            return {
+                                ...globalHeaders(),
+                                statusCode: 400,
+                                body: JSON.stringify({ message: `phone is required for passenger ${passenger.passengerKey}` }),
+                            };
+                        }
+                        for (const p of c.phone) {
+                            if (isBlank(p.label) || isBlank(p.areaCode) || isBlank(p.phoneNumber)) {
+                                return {
+                                    ...globalHeaders(),
+                                    statusCode: 400,
+                                    body: JSON.stringify({ message: `phone fields are incomplete for passenger ${passenger.passengerKey}` }),
+                                };
+                            }
+                        }
+                    }
+                } else if (contact && Array.isArray(contact.contactsProvided)) {
+                    for (const c of contact.contactsProvided) {
+                        for (const p of c.phone || []) {
+                            if (isBlank(p?.areaCode) && isBlank(p?.phoneNumber)) continue;
+                            if (isBlank(p.label) || isBlank(p.areaCode) || isBlank(p.phoneNumber)) {
+                                return {
+                                    ...globalHeaders(),
+                                    statusCode: 400,
+                                    body: JSON.stringify({ message: `phone fields are incomplete for passenger ${passenger.passengerKey}` }),
+                                };
+                            }
                         }
                     }
                 }
@@ -533,6 +587,12 @@ export const handler = async (event, context) => {
                 deadlineMs: bookDeadline,
             });
             if (!polled) {
+                await emitHotelOpsAlert({
+                    scenario: "booking_pending",
+                    record: checkoutRecord,
+                    reason: "hotel_book_fetch_later_in_progress",
+                    extra: { fetchUrl: responseData.asyncFetch.fetchUrl, bookingKey, searchKey },
+                }, "fetch later");
                 return {
                     statusCode: 202,
                     ...globalHeaders(),
@@ -815,11 +875,27 @@ export const handler = async (event, context) => {
                     pollErr?.message
                 );
             }
+            await emitHotelOpsAlert({
+                scenario: "booking_pending",
+                record: checkoutRecord,
+                bookingRecord: hotelBookObj,
+                supplierStatus: bookingData.bookingStatus,
+                reason: "supplier_pending_after_book",
+            }, "pending poll");
         } else {
             console.log(
                 "Booking status not confirmed and not pollable:",
                 bookingData.bookingStatus
             );
+            await emitHotelOpsAlert({
+                scenario: isHotelTerminalStopStatus(bookingData.bookingStatus)
+                    ? "supplier_failed"
+                    : "booking_failed",
+                record: checkoutRecord,
+                bookingRecord: hotelBookObj,
+                supplierStatus: bookingData.bookingStatus,
+                reason: "supplier_status_not_confirmed",
+            }, "non-pollable status");
         }
 
         return {
@@ -846,6 +922,14 @@ export const handler = async (event, context) => {
             }
         } catch (stampErr) {
             console.warn("Failed to stamp hotel checkout confirm_failed:", stampErr?.message || stampErr);
+        }
+        if (ngeniusOrder && checkoutRecord) {
+            await emitHotelOpsAlert({
+                scenario: "booking_failed",
+                record: checkoutRecord,
+                reason: "hotel_confirm_failed",
+                error,
+            }, "confirm_failed");
         }
         if (error?.code && error?.statusCode) {
             return {

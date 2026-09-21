@@ -4,6 +4,7 @@ import {
   assertCheckoutOwner,
   loadCheckoutById,
   patchCheckoutSnapshot,
+  retireCurrentPaymentLink,
   toPublicCheckout,
 } from "../lib/hotelCheckout.js";
 
@@ -37,13 +38,13 @@ export const handler = async (event) => {
       return json(403, { message: "Forbidden" });
     }
 
-    if (!isOwner) {
-      const updated = await patchCheckoutSnapshot(record.bookingKey, {
-        paymentLink: "",
-        orderReference: "",
-        paymentStatus: "none",
-      });
+    if (refreshPaymentLink) {
+      const updated = await retireCurrentPaymentLink(record, "pay_click");
       return json(200, toPublicCheckout(updated));
+    }
+
+    if (!isOwner) {
+      return json(403, { message: "Forbidden" });
     }
 
     if (record.paymentStatus === "captured") {
