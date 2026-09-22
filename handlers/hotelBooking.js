@@ -731,31 +731,37 @@ export const handler = async (event, context) => {
                 bookingKey: { S: bookingKey }
             },
             UpdateExpression: promoAttr
-                ? "SET #bfi = :bookingReferenceId, #pas = :passengers, #st = :status, #prm = :promo"
-                : "SET #bfi = :bookingReferenceId, #pas = :passengers, #st = :status",
+                ? "SET #bfi = :bookingReferenceId, #pas = :passengers, #st = :status, #bs = :bookingStatus, supplierStatusLastSyncedAt = :synced, #prm = :promo"
+                : "SET #bfi = :bookingReferenceId, #pas = :passengers, #st = :status, #bs = :bookingStatus, supplierStatusLastSyncedAt = :synced",
             ExpressionAttributeNames: promoAttr
                 ? {
                     "#bfi": "bookingReferenceId",
                     "#pas": "passengers",
                     "#st": "status",
+                    "#bs": "bookingStatus",
                     "#prm": "promo"
                 }
                 : {
                     "#bfi": "bookingReferenceId",
                     "#pas": "passengers",
-                    "#st": "status"
+                    "#st": "status",
+                    "#bs": "bookingStatus"
                 },
             ExpressionAttributeValues: promoAttr
                 ? {
                     ":bookingReferenceId": { S: bookingData.bookingReferenceId },
                     ":passengers": { S: JSON.stringify(bookingData.passengers) },
                     ":status": { S: "confirmed" },
+                    ":bookingStatus": { S: String(bookingData.bookingStatus || "") },
+                    ":synced": { S: new Date().toISOString() },
                     ":promo": { S: promoAttr }
                 }
                 : {
                     ":bookingReferenceId": { S: bookingData.bookingReferenceId },
                     ":passengers": { S: JSON.stringify(bookingData.passengers) },
-                    ":status": { S: "confirmed" }
+                    ":status": { S: "confirmed" },
+                    ":bookingStatus": { S: String(bookingData.bookingStatus || "") },
+                    ":synced": { S: new Date().toISOString() }
                 }
         });
         await dynamo.send(updateCmd);
