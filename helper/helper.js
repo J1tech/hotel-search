@@ -176,7 +176,8 @@ export const globalHeaders = () => {
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Credentials": true,
-      "Access-Control-Allow-Headers": "Content-Type, X-API-KEY, user_type, user_id, Authorization",
+      "Access-Control-Allow-Headers":
+        "Content-Type, X-API-KEY, user_type, user_id, Authorization, X-Checkout-Mint, X-Checkout-Redirect-Url",
     }
   }
 }
