@@ -187,10 +187,40 @@ const maybeQueueConfirmationEmail = async ({
   return { queued: true };
 };
 
+/** Mirror supplier bookingStatus onto hotel-pre-book for /myHotelBooking. */
+export const syncPreBookSupplierBookingStatus = async (
+  dynamo,
+  { bookingKey, bookingStatus, checkedAt = new Date().toISOString() }
+) => {
+  const table = process.env.HOTEL_PRE_BOOK_TABLE;
+  const key = String(bookingKey || "").trim();
+  const status = normalizeStatus(bookingStatus);
+  if (!table || !key || !status) return;
+
+  try {
+    await dynamo.send(
+      new UpdateItemCommand({
+        TableName: table,
+        Key: { bookingKey: { S: key } },
+        UpdateExpression:
+          "SET bookingStatus = :bs, supplierStatusLastSyncedAt = :synced, updatedAt = :u",
+        ExpressionAttributeValues: {
+          ":bs": { S: status },
+          ":synced": { S: checkedAt },
+          ":u": { S: checkedAt },
+        },
+      })
+    );
+  } catch (err) {
+    console.warn("syncPreBookSupplierBookingStatus failed:", key, err?.message || err);
+  }
+};
+
 const updateBookingStatus = async ({
   dynamo,
   bookingReferenceId,
   hotelKey,
+  bookingKey = "",
   expectedStatus,
   newStatus,
   extra = {},
@@ -232,6 +262,15 @@ const updateBookingStatus = async ({
       ExpressionAttributeValues: values,
     })
   );
+
+  const preBookKey = String(bookingKey || extra.bookingKey || "").trim();
+  if (preBookKey) {
+    await syncPreBookSupplierBookingStatus(dynamo, {
+      bookingKey: preBookKey,
+      bookingStatus: newStatus,
+      checkedAt: now,
+    });
+  }
 };
 
 const isMaxAgeExceeded = (payload) => {
@@ -371,6 +410,7 @@ export const processPendingHotelPollItem = async ({
         dynamo,
         bookingReferenceId: payload.bookingReferenceId,
         hotelKey: payload.hotelKey,
+        bookingKey: payload.bookingKey || stored?.bookingKey,
         expectedStatus: dbStatus,
         newStatus: supplierStatus,
         extra: {
@@ -402,6 +442,7 @@ export const processPendingHotelPollItem = async ({
       dynamo,
       bookingReferenceId: payload.bookingReferenceId,
       hotelKey: payload.hotelKey,
+      bookingKey: payload.bookingKey || stored?.bookingKey,
       expectedStatus: dbStatus,
       newStatus: supplierStatus,
     });

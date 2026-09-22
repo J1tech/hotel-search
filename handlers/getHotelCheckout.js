@@ -3,7 +3,9 @@ import { globalHeaders, InternalError } from "../helper/helper.js";
 import {
   ensurePaymentLink,
   loadCheckoutById,
+  parseCheckoutMintRequest,
   refreshPaymentStatus,
+  resolveCheckoutRedirectUrl,
   toPublicCheckout,
 } from "../lib/hotelCheckout.js";
 
@@ -22,6 +24,8 @@ export const handler = async (event) => {
 
     const checkoutId = event.pathParameters?.checkoutId;
     if (!checkoutId) return json(400, { message: "Missing checkoutId" });
+
+    const { shouldMint } = parseCheckoutMintRequest(event);
 
     let record = await loadCheckoutById(checkoutId);
     if (!record?.checkoutId) {
@@ -42,6 +46,20 @@ export const handler = async (event) => {
       });
     }
 
+    if (!shouldMint) {
+      return json(200, toPublicCheckout(record));
+    }
+
+    const redirectUrl = resolveCheckoutRedirectUrl(event, checkoutId);
+    if (!redirectUrl) {
+      return json(400, {
+        ...toPublicCheckout(record),
+        message:
+          "Could not resolve checkout return URL from Referer/Origin headers (HTTPS required). Open pay from the Al Rais checkout page.",
+        code: "REDIRECT_URL_REQUIRED",
+      });
+    }
+
     const rooms = Array.isArray(record.snapshot?.hotelBookingPayload?.rooms)
       ? record.snapshot.hotelBookingPayload.rooms
       : [];
@@ -58,6 +76,7 @@ export const handler = async (event) => {
       next = await ensurePaymentLink(record, {
         emailAddress: email,
         billingAddress: { firstName: given, lastName: surname },
+        redirectUrl,
       });
     } catch (err) {
       if (err?.code === "AMOUNT_NOT_FINAL" || err?.statusCode === 409) {

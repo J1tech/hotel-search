@@ -32,6 +32,8 @@ custom:
     - user_type
     - user_id
     - Authorization
+    - X-Checkout-Mint
+    - X-Checkout-Redirect-Url
     methods:
     - OPTIONS
     - HEAD
