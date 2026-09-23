@@ -323,23 +323,6 @@ export const processPendingHotelPollItem = async ({
     } catch (err) {
       console.warn("Max-age DB flag failed:", payload.bookingReferenceId, err?.message);
     }
-    try {
-      await sendHotelOpsAlert({
-        scenario: "booking_pending",
-        bookingRecord: storedForAlert || {
-          bookingReferenceId: payload.bookingReferenceId,
-          hotelKey: payload.hotelKey,
-          bookingKey: payload.bookingKey,
-          searchKey: payload.searchKey,
-          bookingStatus: payload.lastKnownStatus,
-        },
-        supplierStatus: payload.lastKnownStatus,
-        reason: "pending_poll_max_age",
-        extra: { userId: payload.userId, userType: payload.userType },
-      });
-    } catch (err) {
-      console.warn("hotel ops alert (max age) failed:", err?.message || err);
-    }
     result.outcome = "max_age_stopped";
     return result;
   }
